@@ -1,0 +1,12 @@
+#!/bin/bash
+email=$(git config user.email)
+
+# Check if it's a work email (not personal)
+if [[ ! "$email" == *"@gmail.com"* ]] && [[ "$email" == *"@"* ]]; then
+    echo "❌ STOP! Non-personal email detected in personal project!"
+    echo "Current email: $email"
+    echo "Please use your personal Gmail address"
+    exit 1
+fi
+
+echo "✅ Personal email confirmed"
