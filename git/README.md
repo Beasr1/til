@@ -1,7 +1,8 @@
 # Rewriting History Safely — A Git Course
 
 A course on the half of git that scares people: rebasing, force-pushing, and reading the
-state you end up in afterwards.
+state you end up in afterwards — plus one chapter on the identity stamped into every commit
+you make, because that is history too, and just as hard to take back.
 
 **This is reference learning material.** The concepts are general git. The worked example
 running through it is real (names changed) — a rebase of `acme/ledger`'s `feat/env-gate` onto a
@@ -12,7 +13,7 @@ I wrote this as a teacher, not as a peer. That means:
 
 - I explain things you might already know. Skim if so.
 - I use the mental model before the commands, and *why* before *how*.
-- Every file ends with **Check yourself** questions. Answers are in `09-exercises.md`.
+- Every file ends with **Check yourself** questions. Answers are in `10-exercises.md`.
 - Every dangerous command comes with what it destroys and how to get it back.
 
 ## The one thing to understand first
@@ -51,12 +52,22 @@ this course is a consequence.
 | 6 | [Safety nets](06-safety-nets.md) | Backup refs, reflog, `ORIG_HEAD`, `range-diff`, stashes across a rewrite |
 | 7 | [Reading divergence](07-reading-divergence.md) | What "outgoing changes" really compares, and the two-dot/three-dot trap |
 
+### Part 4 — Who the history says you are
+
+Added later, so it carries the next free number. It needs only file 01 (§1.1, the `author`
+and `committer` lines); its section on rewriting identities leans on file 05. Read it any
+time — ideally before your first commit on a new machine.
+
+| # | File | After this you can… |
+|---|------|---------------------|
+| 8 | [Who a commit says it's from](08-commit-identity.md) | Give work and personal folders different identities automatically, catch the wrong one before it's committed, and know what fixing it later costs |
+
 ### Reference
 
 | # | File | |
 |---|------|--|
-| 8 | [Glossary](08-glossary.md) | Look things up |
-| 9 | [Exercises & answers](09-exercises.md) | Every "Check yourself" question, with worked answers |
+| 9 | [Glossary](09-glossary.md) | Look things up |
+| 10 | [Exercises & answers](10-exercises.md) | Every "Check yourself" question, with worked answers |
 
 ## If you're short on time
 
@@ -64,6 +75,7 @@ this course is a consequence.
 - **30 minutes:** file 01, then 05, then the summary table in 04.
 - **You are about to rebase something scary:** file 06 first (set up the safety net), then 03.
 - **Something already went wrong:** file 06, section "Getting it back".
+- **New laptop, or you code for work and for yourself on one machine:** file 08, §8.3 and §8.5.
 
 ## The one-paragraph summary of everything
 
@@ -81,6 +93,11 @@ released. So a rebase is not finished when `git status` is clean. It is finished
 thing builds, the tests pass, and `git range-diff` shows you exactly which commits changed
 and why.
 
+And separately: the name and email on every commit are plain strings copied from your
+config, unverified, and hashed in for good — so set them per folder with a conditional
+include, guard them with a check, and remember that only a signature proves who made a
+commit.
+
 ## How to use me
 
 Ask anything, including:
@@ -91,5 +108,6 @@ Ask anything, including:
 - "Is it safe to force-push this? Here's my situation…"
 - "I think I lost a commit"
 - "Why does my IDE say 99 outgoing when I wrote 8?"
+- "Which email will a commit in this folder get, and why?"
 
 I'll add files here as we go if a topic earns its own page.

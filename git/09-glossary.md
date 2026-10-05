@@ -1,4 +1,4 @@
-# 8. Glossary
+# 9. Glossary
 
 Terms in the order you meet them, not alphabetically — look things up with your editor's
 search.
@@ -96,6 +96,51 @@ form of "is this already on master".
 not fetched, expires (90 days reachable / 30 unreachable).
 
 **`git fsck --lost-found`** — finds unreferenced objects when the reflog has been pruned.
+
+## Identity
+
+**Author** — who wrote the change. Kept across rebase and cherry-pick.
+
+**Committer** — who made this particular commit object. Becomes *you* on every rebase,
+cherry-pick or `--amend`.
+
+**`user.name` / `user.email`** — where both identities normally come from. Plain strings:
+git verifies neither. Overridden by `author.*` / `committer.*` keys, which are overridden by
+`GIT_AUTHOR_*` / `GIT_COMMITTER_*` environment variables.
+
+**`git config --show-origin --show-scope <key>`** — which file, and which layer
+(system/global/local/worktree/command), a value came from. Add `--get-all` to see every
+value; the last one wins.
+
+**`git var GIT_AUTHOR_IDENT`** — the identity git would stamp right now, environment
+included.
+
+**Conditional include (`includeIf`)** — pull another config file in only when a condition
+holds. Spliced in where it appears, so it must come *after* what it overrides.
+
+**`gitdir:`** — `includeIf` condition matching the `.git` directory's path. A trailing `/`
+means "and everything below"; without it, only that exact path. `gitdir/i:` is the
+case-insensitive form.
+
+**`hasconfig:remote.*.url:`** (git ≥ 2.36) — `includeIf` condition matching any remote URL.
+Doesn't fire before the remote exists.
+
+**`user.useConfigOnly`** — refuse to guess an email from login and hostname; with no email
+configured, commits fail instead of going out with a guess.
+
+**`.mailmap`** — maps old names/emails to canonical ones *for display* in `log` and
+`shortlog`. Rewrites nothing.
+
+**`git filter-repo`** — separate tool, recommended by git's own manual over
+`filter-branch`, for rewriting history wholesale (e.g. replacing an email in every commit).
+New SHAs throughout; force-push everything.
+
+**`noreply` address** — GitHub's `ID+USERNAME@users.noreply.github.com`, which attributes
+commits to your account without publishing a real address.
+
+**Signed commit** — a commit carrying a cryptographic signature (`gpg.format` = `openpgp`,
+`x509` or `ssh`; key in `user.signingKey`). The only thing that proves which key made it;
+GitHub shows **Verified** when the signature checks out against a key on an account.
 
 ## The dots
 

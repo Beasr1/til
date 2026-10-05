@@ -1,4 +1,4 @@
-# 9. Exercises & answers
+# 10. Exercises & answers
 
 Every "Check yourself" question, with worked answers. Read the answer only after you have
 committed to one — the wrong answers here are the ones that cost afternoons.
@@ -218,6 +218,50 @@ Ancestry is by identity, not by content.
 
 ---
 
+## File 8 — Who a commit says it's from
+
+**1. Cherry-picked, then rebased: what do `author` and `committer` say?**
+Author: your colleague — both operations copy the author across. Committer: you — each one
+built a new commit object, and the committer is whoever did that. They differ because they
+answer different questions: who wrote the change, and who last made this commit.
+`git log --format=fuller` shows both.
+
+**2. `gitdir:~/code/personal` (no trailing slash), wrong email in a repo below it.**
+Without a trailing `/` the pattern matches a `.git` directory at exactly that path, not
+anything underneath. The repo's `.git` is at `~/code/personal/site/.git`, which doesn't
+match, so the include never fires and the global default wins. Run inside the repo,
+`git config --show-origin user.email` shows the value coming from `~/.gitconfig` rather
+than the personal file. Fix: `gitdir:~/code/personal/`.
+
+**3. Include moved above `[user]`, work address is back.**
+An include is spliced in at the point where it appears, and for a single-valued key the
+last value read wins. Now git reads the personal email first, then the `[user]` block's
+work email, which overrides it. Nothing is malformed, so nothing complains.
+`--get-all --show-origin` shows both values in read order, with the wrong one last.
+
+**4. `hasconfig:remote.*.url:`, three commits before `git remote add`.**
+The default (work) address — the condition looks for a matching remote URL and there
+wasn't one yet. Two setups would have caught the first commit: a folder rule (`gitdir:`)
+for wherever you start new projects, or no default email at all plus
+`user.useConfigOnly = true`, so the first commit fails with "no email was given" and you
+have to choose.
+
+**5. Forty public commits, someone suggests `.mailmap`.**
+It fixes how *git* shows them: `git log` and `git shortlog` display the canonical identity.
+It leaves every commit object untouched — the work address is still in each one, in every
+clone and both forks, and I found no GitHub documentation saying it uses `.mailmap` for
+attribution. A real fix is a full rewrite (`git filter-repo --mailmap`): new SHAs from the
+first affected commit on, a force-push of every branch and tag, and both friends having to
+reset or reclone (file 5 §5.5). Their forks keep the old commits whatever you do.
+
+**6. Name, work email, and Verified. What does each establish?**
+The name and email establish nothing — they're strings anyone can set. The badge
+establishes that the commit's signature checked out against a signing key registered to a
+GitHub account. It doesn't make the email the *right* one (signing doesn't choose your
+address), and it identifies the key, not the person at the keyboard.
+
+---
+
 ## Things to try
 
 1. **Make a rebase conflict on purpose.** Two branches editing the same line, rebase one
@@ -232,3 +276,8 @@ Ancestry is by identity, not by content.
    Then repeat with `--force-if-includes` and watch it refuse.
 5. **Allocate a colliding number.** Add a migration `V042` on a branch, add a different
    `V042` on master, rebase. Note that git says nothing at all.
+6. **Watch an include fail silently.** In a fresh shell, `export HOME=$(mktemp -d)` so
+   your real config is untouched. Set a default email and a
+   `gitdir:` include for one folder. Confirm with `--show-origin` inside a repo there; then
+   delete the trailing slash, then move the include above `[user]`, and watch the address
+   flip back each time with no error.
