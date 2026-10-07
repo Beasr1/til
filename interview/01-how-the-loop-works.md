@@ -108,7 +108,7 @@ including LLD and a notification-system HLD ([roundz, Jul 2025][roundz-swiggy]).
 
 **Big tech.** These publish more. Amazon's SDE II page describes an OA (two coding questions,
 system-design scenarios and a work-style survey) and then a loop of four 55-minute
-interviews covering coding, system design, data structures and object-oriented design, with
+interviews covering coding, data structures and algorithms, problem solving and system design, with
 behavioural questions tied to its Leadership Principles ([amazon.jobs][amzn-sde2]).
 Atlassian lists two coding parts (data structures and code design), a 60-minute system design
 interview, a manager interview and a values interview, followed by a hiring committee
