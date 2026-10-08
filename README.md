@@ -13,77 +13,97 @@ only decides *which course next*.
 
 ## The map
 
-Solid arrows mean a chapter in the later course says "read this first". Dashed arrows mean
-the earlier course gives useful depth but isn't required; those are my suggestions, not
-dependencies stated in the courses.
+The plain-text version renders anywhere. The diagrams below it need a Mermaid-capable viewer
+(GitHub, or VS Code with a Mermaid extension).
+
+```
+★ start here
+  │
+  ▼
+Stage 0 · tools ............ git, docker
+  │
+  ▼
+Stage 1 · CS foundations ... interview/01 ──► cs-fundamentals
+                                         └──► dsa
+  │
+  ▼
+Stage 2 · backend .......... http ──► go-services
+                             postgres ──┬──► clickhouse
+                             kafka ─────┘
+                             vector-search, schema-evolution   (any time)
+  │
+  ▼
+Stage 3 · design ........... interview/system-design
+
+Side tracks — independent, start any time
+  web ................ css, static-sites   (http/04 helps)
+  trust & hardware ... signatures ──► smartcards, firmware-update
+  biometrics ......... fingerprint;  face ──► face/spoof
+```
+
+In the diagrams, solid arrows mean a chapter in the later course says "read this first".
+Dashed arrows mean the earlier course gives useful depth but isn't required. Those are my
+suggestions, not dependencies stated in the courses. The highlighted node is the general
+entry point.
+
+**The main path**
 
 ```mermaid
-flowchart TD
-    subgraph T0["Stage 0 — tools you use daily"]
+flowchart LR
+    subgraph S0["Stage 0 · tools"]
         git[git]
         docker[docker]
     end
 
-    subgraph T1["Stage 1 — CS foundations"]
-        iv01[interview/01<br/>the interview loop]
-        csf[interview/cs-fundamentals<br/>OS · DBMS · networks · OOP]
-        dsa[interview/dsa]
+    subgraph S1["Stage 1 · CS foundations"]
+        iv01[interview/01]
+        csf[cs-fundamentals]
+        dsa[dsa]
+        iv01 --> csf
+        iv01 --> dsa
     end
 
-    subgraph T2["Stage 2 — backend in production"]
-        http[http]
-        go[go-services]
-        pg[postgres]
-        kafka[kafka]
-        ch[clickhouse]
+    subgraph S2["Stage 2 · backend in production"]
+        http[http] -.-> go[go-services]
+        pg[postgres] --> ch[clickhouse]
+        kafka[kafka] --> ch
         vs[vector-search]
         se[schema-evolution]
     end
 
-    subgraph T3["Stage 3 — putting it together"]
-        sd[interview/system-design]
+    subgraph S3["Stage 3 · design"]
+        sd[system-design]
     end
 
-    subgraph W["Side track — web"]
+    S0 ~~~ S1
+    csf -.-> S2
+    S2 -.-> S3
+    iv01 --> sd
+
+    style iv01 fill:#f9d77e,stroke:#b8860b,color:#000
+```
+
+**The side tracks**
+
+```mermaid
+flowchart LR
+    subgraph W["Web"]
         css[css]
         ss[static-sites]
     end
 
-    subgraph S["Side track — trust and hardware"]
-        sig[signatures]
-        sc[smartcards]
-        fw[firmware-update]
+    subgraph T["Trust and hardware"]
+        sig[signatures] -.-> sc[smartcards]
+        sig -.-> fw[firmware-update]
     end
 
-    subgraph B["Side track — biometrics"]
+    subgraph B["Biometrics"]
         fp[fingerprint]
-        face[face]
-        spoof[face/spoof]
+        face[face] --> spoof[face/spoof]
     end
 
-    iv01 --> csf
-    iv01 --> dsa
-    iv01 --> sd
-    csf -.-> http
-    csf -.-> pg
-    pg --> ch
-    kafka --> ch
-    http -.-> go
-    go -.-> sd
-    pg -.-> sd
-    kafka -.-> sd
-    http -.-> ss
-    sig -.-> sc
-    sig -.-> fw
-    face --> spoof
-    fp -.-> face
-
-    style iv01 fill:#f9d77e,stroke:#b8860b
-    style csf fill:#f9d77e,stroke:#b8860b
+    http04["http/04<br/>(stage 2)"] -.-> ss
 ```
-
-The highlighted nodes are the general entry point: if you don't know where to start, start
-there.
 
 ---
 
