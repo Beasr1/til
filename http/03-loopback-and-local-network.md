@@ -1,4 +1,4 @@
-# 4. Reaching localhost from a web page
+# 3. Reaching localhost from a web page
 
 ## The problem
 
