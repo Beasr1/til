@@ -127,6 +127,7 @@ matters is **access** (prove you hold the card) versus **use** (prove you are th
 | **Trusted responder** | An OCSP signer the client trusts locally, unrelated to the issuing CA (7) |
 | **thisUpdate / nextUpdate** | The window an OCSP answer is good for. Outside it, the answer is stale (7) |
 | **Nonce** | Optional OCSP extension binding a response to one request, so it can't be replayed (7) |
+| **id-pkix-ocsp-nocheck** | Extension a CA puts on a designated responder's certificate to say "don't check this one's revocation". Its key is then as sensitive as a CA key (7) |
 
 ## Status words worth knowing by sight
 

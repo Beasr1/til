@@ -595,6 +595,44 @@ correspond to the one in the request. That's the whole CertID — issuer-name ha
 issuer-key hash as well as serial — and B's issuer hashes don't match A's. Requiring the
 verifying anchor to be the card's own issuer closes it too.
 
+**7. `good` for the card, intermediate revoked last week.**
+
+The card's certificate is not valid. Path validation requires every certificate in the path
+to be unrevoked (RFC 5280 §6.1.3(a)(3)), and the intermediate fails that, so the path fails
+and everything below it with it.
+
+Your check missed it because OCSP answers for the certificate you named and nothing else
+(RFC 6960 §4.1.1). A `good` for the card says its serial isn't revoked; it says nothing about
+the CA that signed it. The responder might have marked the card revoked too, if the
+intermediate was revoked for key compromise (§2.7) — but that's a MAY, so you can't count on
+it.
+
+What catches it is a second status question, about the intermediate's own certificate, put
+to whoever answers for the root: the root's responder, or its CRL. Notice the asymmetry with
+a path of one. If the card's certificate were signed directly by your anchor, there would be
+no second question to ask, because the anchor isn't in the path. A compromised anchor is
+removed from configuration, not detected at run time.
+
+**8. "Verified" for a card reported stolen.**
+
+Checks that could have run and passed:
+
+- the **chain check**: the certificate was issued by a CA you trust, and it still was;
+- the **subject match**: it names the right person, which a stolen card does;
+- the **validity period**: theft doesn't change `notAfter`.
+
+None of them looks at revocation, so a log line saying the certificate verified is entirely
+consistent with a stolen card.
+
+What would catch it is a **revocation check** (OCSP or CRL), provided the theft was reported,
+the issuer revoked the certificate, and your answer is fresh enough to postdate that.
+
+Even with that check passed, two things stay unproven. A revocation check is about the
+certificate, so it can't tell you the card is genuine: a clone carrying a copy of an
+unrevoked certificate passes it. Only the card signing your challenge proves that. And
+nothing so far proves the person presenting the card is its holder — that's what PINs and
+biometrics are for.
+
 ---
 
 ## Things to try on a real card

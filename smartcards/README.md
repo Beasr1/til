@@ -52,7 +52,7 @@ Read 1–4 in order. They build.
 | 4 | [T=0 and T=1](04-transmission-protocols.md) | Explain why the same command works on one card and appears to fail on another |
 | 5 | [How cards are organised](05-how-cards-are-organised.md) | Navigate a card's files, or recognise that it hasn't got any |
 | 6 | [Proving a card is genuine](06-proving-genuineness.md) | Explain what a clone can and cannot fake, which direction of a handshake proves it, why one scheme can need two different mechanisms, and which credential actually gates which — worked through two real national eID schemes |
-| 7 | [Verifying the card's certificate](07-verifying-the-card-certificate.md) | Say exactly what "chains to a trust anchor" checks, find the right CA when an issuer has several, explain why one library refuses a certificate another accepts, and read an OCSP answer for what it does and doesn't prove |
+| 7 | [Verifying the card's certificate](07-verifying-the-card-certificate.md) | Say exactly what "chains to a trust anchor" checks, find the right CA when an issuer has several, explain why one library refuses a certificate another accepts, read an OCSP answer for what it does and doesn't prove, and say which certificates in a chain a revocation check actually covered |
 
 Reference, not reading:
 
@@ -99,7 +99,8 @@ identifier, which picks the anchor, and one signature under that anchor proves t
 so an issuer's every live CA must be listed, an anchor's own self-signature is never what
 you trust (its pin is), and a CA certificate that isn't strict DER is refused by strict
 parsers. Whether the certificate has since been **revoked** is a different question again,
-answered by an OCSP response that is itself only as good as the key you verify it under.
+answered by an OCSP response that is itself only as good as the key you verify it under —
+and that answers for one certificate, never the chain above it.
 
 ## How to use me
 

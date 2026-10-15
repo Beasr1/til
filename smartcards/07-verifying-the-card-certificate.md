@@ -213,7 +213,9 @@ An OCSP request identifies a certificate by **CertID** (RFC 6960 §4.1.1):
 > `issuerKeyHash`. That works only if the CA computed its key identifier as the SHA-1 of its
 > own public key — RFC 5280 §4.2.1.2's method (1), which is common but not required.
 > A CA that used another method gets a well-formed request naming a key the responder
-> doesn't recognise. If you hold the issuer's certificate, hash its key yourself.
+> doesn't recognise — typically answered `unknown`, which RFC 6960 §2.2 says usually means
+> "an unrecognized issuer that is not served by this responder". If you hold the issuer's
+> certificate, hash its key yourself.
 
 ### Who signs the answer
 
@@ -262,6 +264,52 @@ Two further properties settle how much an attacker on the network can do:
   replayable until its `nextUpdate`. The freshness checks bound that window but don't close
   it.
 
+### One certificate per question, not the chain
+
+It's natural to assume that asking OCSP about a card's certificate also checks the CA above
+it — that a `good` means the whole chain is sound. It doesn't, and the standards are
+explicit about the scope.
+
+A request is a list of CertIDs: `requestList` "contains one or more single certificate
+status requests", each naming "a target certificate" (RFC 6960 §4.1.1). The response
+carries one answer per certificate asked about (§4.2.2.3). The responder answers for exactly
+what you named, and `good` claims very little even about that:
+
+| Status | RFC 6960 §2.2 says it means | It does not mean |
+|---|---|---|
+| `good` | no certificate with that serial, inside its validity interval, is revoked | that the certificate was ever issued, or anything about its issuer |
+| `revoked` | that certificate is revoked, permanently or on hold | — |
+| `unknown` | the responder doesn't know the certificate, usually because it doesn't serve that issuer | `good` |
+
+Checking the rest of the chain is the client's job. RFC 5280 §6.1.3(a)(3) — "at the current
+time, the certificate is not revoked" — applies to every certificate in the path, the card's
+and each intermediate's, so the client asks about each one, of whoever answers for that
+certificate's issuer. Who checks a "parent" depends on which parent:
+
+| The parent is | Who checks whether it's revoked | How |
+|---|---|---|
+| an **intermediate CA** | you, as part of path validation | its own status request — to the root's responder, or the root's CRL |
+| the **trust anchor** | nobody, at run time | it isn't in the path (§6.1.1(d)): it's trusted because you configured it. Retiring it is removing it from your configuration |
+| a **designated responder's** certificate | as its issuing CA directs (§4.2.2.2.1) | not at all, if the CA marked it `id-pkix-ocsp-nocheck`; otherwise by CRL or AIA, or by local policy |
+
+A card certificate signed directly by your anchor is a path of one, so one status question
+really is the whole revocation check — but only because the one "parent" is the anchor,
+which nothing checks at run time.
+
+Will the child come back `revoked` when its parent is? Not by any rule. RFC 6960 §2.7 lets a
+responder that knows a CA's key is compromised return `revoked` for every certificate that
+CA issued — but it's a MAY, and it covers key compromise only. For a CA withdrawn for any
+other reason the RFC says nothing, so its children keep whatever answer their own records
+give, usually `good`. A revoked intermediate invalidates its children through **path
+validation**, because that intermediate fails its own check — not through the children's
+answers.
+
+> ⚠️ When the compromised key is the one you anchor responses on, OCSP can't save you. A
+> designated responder is just a certificate that CA signed, so whoever holds the key can
+> mint one and sign `good` for anything — and it verifies. Every answer signed under a
+> compromised CA is worthless, including the honest ones. The fix is the same as for the
+> card side: remove the anchor.
+
 ## What each check proves
 
 Put together, these are separate checks, and they answer separate questions:
@@ -276,6 +324,12 @@ Put together, these are separate checks, and they answer separate questions:
 
 Only the last row detects a clone. Every row above it is about the certificate, and a
 certificate is just bytes.
+
+> ⚠️ The rows are independent. A system can run any subset, in any order, and in different
+> places — a chain check on one request, a revocation check on another, a challenge on a
+> third. A success from one row says nothing about whether the others ran. "Certificate
+> verified" in a log is the first row; it is not a revocation result, and not a genuineness
+> result.
 
 ## Check yourself
 
@@ -294,3 +348,10 @@ certificate is just bytes.
 6. An OCSP client accepts a response when its signature verifies under any of the issuer's
    CAs and its serial matches the card's. Construct the attack this allows, say what has to
    be true for it to work, and name the RFC 6960 check that closes it.
+7. A card's certificate is signed by an intermediate CA, which is signed by your anchor. You
+   ask the responder about the card's certificate and get a fresh, properly signed `good`.
+   The intermediate was revoked last week. Is the card's certificate valid? What did your
+   check miss, and what would have caught it?
+8. A log shows "card certificate verified" for a card that was reported stolen months ago.
+   Name every check that could have run without catching it, and the one that would have.
+   Then say what would still be unproven if that one had run and passed.
