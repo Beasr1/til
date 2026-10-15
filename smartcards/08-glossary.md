@@ -1,4 +1,4 @@
-# 7. Glossary
+# 8. Glossary
 
 Reference, not reading. Chapter references point at where the term is motivated.
 
@@ -77,7 +77,7 @@ Reference, not reading. Chapter references point at where the term is motivated.
 | **SCP01 / SCP02 / SCP03** | GlobalPlatform Secure Channel Protocols. 3DES, 3DES with a counter, AES-CMAC respectively (6) |
 | **Secure messaging** | MACing and optionally encrypting APDUs over an established session (6) |
 | **PSO** | Perform Security Operation, `INS 2A` — the ISO 7816-8 command for signing, deciphering and similar |
-| **Trust anchor** | A CA certificate obtained out of band, against which card certificates are checked. Without one, verification is circular (6) |
+| **Trust anchor** | A CA certificate obtained out of band, against which card certificates are checked. Without one, verification is circular. An input to path validation, not part of the path: its own signature is never checked (6, 7) |
 | **Retry counter** | The count of remaining attempts for a credential. `63 CX` reports it — and decrements it (3) |
 
 ## eID credentials and access control
@@ -100,6 +100,33 @@ matters is **access** (prove you hold the card) versus **use** (prove you are th
 | **PUK** | PIN Unblock Key. Restores a blocked PIN. Some schemes replace it with a biometric reset (6) |
 | **SAM** | Secure Access Module. A second smart card in the terminal holding symmetric keys, doing locally what an HSM would do centrally (6) |
 | **Transport PIN** | A one-time PIN shipped to the holder, valid once, replaced with one of their choosing on first use (6) |
+
+## Certificates and revocation
+
+| Term | Meaning |
+|---|---|
+| **X.509 certificate** | An issuer's signed statement binding a public key to a name. Profiled for the internet by RFC 5280 (7) |
+| **Leaf** | The certificate at the end of a path — here, the one read off the card (7) |
+| **Issuer / subject** | The distinguished names of the CA that signed a certificate, and of whoever the key belongs to (7) |
+| **DN** | Distinguished Name. A structured name such as `CN=…, O=…, C=AE`; compared as encoded bytes by strict libraries (7) |
+| **AKI** | Authority Key Identifier. Names the key that signed this certificate; points at the issuer's SKI (7) |
+| **SKI** | Subject Key Identifier. A CA's identifier for its own key, commonly the SHA-1 of the public key (7) |
+| **Basic constraints** | Extension saying whether a key may sign certificates (`cA`) and how many CAs may sit below it (7) |
+| **Key usage** | Extension listing what a key may do — `digitalSignature`, `nonRepudiation` / `contentCommitment`, `keyCertSign`… (7) |
+| **Path validation** | RFC 5280 §6.1's check of every link from trust anchor to leaf: signature, validity, CA permission, constraints (7) |
+| **Pin** | A fingerprint, usually SHA-256 of the certificate's DER, checked when an anchor is loaded. What makes a file an anchor rather than whatever is at that path (7) |
+| **Key changeover** | A CA starting to issue under a new key while certificates under the old one remain valid (7) |
+| **ASN.1** | The notation certificates are written in; the encoding rules below turn it into bytes (7) |
+| **BER** | Basic Encoding Rules. Allows several encodings of one value — `TRUE` is any non-zero octet (7) |
+| **DER** | Distinguished Encoding Rules. The subset with exactly one encoding per value — `TRUE` is `FF`. What signatures are computed over (7) |
+| **CRL** | Certificate Revocation List. A signed list of revoked serials, downloaded whole (7) |
+| **OCSP** | Online Certificate Status Protocol, RFC 6960. Ask about one certificate, get a signed `good` / `revoked` / `unknown` (7) |
+| **CertID** | How an OCSP request names a certificate: issuer-name hash, issuer-key hash, serial (7) |
+| **AIA** | Authority Information Access. Certificate extension carrying the OCSP responder's address; when absent, the address is configuration (7) |
+| **Designated responder** | An OCSP signer certified by the issuing CA with `id-kp-OCSPSigning`. Verified under the issuing CA (7) |
+| **Trusted responder** | An OCSP signer the client trusts locally, unrelated to the issuing CA (7) |
+| **thisUpdate / nextUpdate** | The window an OCSP answer is good for. Outside it, the answer is stale (7) |
+| **Nonce** | Optional OCSP extension binding a response to one request, so it can't be replayed (7) |
 
 ## Status words worth knowing by sight
 

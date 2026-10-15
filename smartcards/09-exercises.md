@@ -1,4 +1,4 @@
-# 8. Exercises
+# 9. Exercises
 
 Worked answers to every **Check yourself**, then things to try on a real card.
 
@@ -506,6 +506,97 @@ card touches a reader.
 
 ---
 
+## Chapter 7 — Verifying the card's certificate
+
+**1. Issuer DN and AKI — why both, and which proves anything?**
+
+They narrow different things. The DN says which authority; the AKI says which of that
+authority's keys. An issuer that has changed key without changing its name has several CA
+certificates with the same subject, and only the key identifier tells them apart before you
+try a signature.
+
+Neither proves anything. Both are fields the certificate's author wrote, and a forger
+writes whatever they like. They are an index: they tell the verifier which anchor to try
+first. The proof is the signature verifying under that anchor's key. Get the index wrong
+and you waste a signature check; get the signature check wrong and you have no
+verification at all.
+
+**2. One of three live CAs listed.**
+
+Every card issued under the other two is rejected. The error is the same one a card from a
+different scheme produces — unknown authority, or whatever your wrapper calls a failed
+chain — because to the verifier that's exactly what it is: a
+certificate whose issuer isn't among its anchors.
+
+It's hard to spot for three reasons. Nothing in the error says "you're missing a CA". The
+cards that fail are a minority, usually the older ones, so testing with recent cards passes.
+And a rejected card looks like a user problem rather than a configuration one. The way to
+catch it is the other direction: inventory the issuer's CAs, and for each one find a card
+whose AKI matches its SKI.
+
+**3. Checking the root's self-signature "for safety".**
+
+It establishes that whoever produced the file held the private key matching the public key
+in it. That's true of any self-signed certificate anyone has ever made, including one an
+attacker makes with the issuer's name on it. So it rules out a corrupted file and nothing
+else.
+
+What protects you from a substituted root is the **pin**: a fingerprint, obtained out of
+band, that the loaded file must match. A substitute fails the pin, whatever its
+self-signature says. This is why RFC 5280 §6.1 treats the anchor as an input rather than a
+link in the path, and why OpenSSL leaves the self-signature check off by default.
+
+**4. Prints in `openssl`, refused as "invalid basic constraints".**
+
+Most likely the `cA` boolean is BER-encoded: `01 01 01` instead of DER's `01 01 FF`. X.690
+§8.2.2 lets BER write `TRUE` as any non-zero octet; §11.1 requires DER to use `FF`. The
+strict library is right about the standard — RFC 5280 says the signed data is DER — and the
+lenient one is being compatible.
+
+Repairing the anchor is safe because nothing you rely on comes from its encoding. Its
+signature is never checked, the rewrite is one byte of the same length with the same
+meaning, and the name and key are untouched. Pin the original file, not the repaired bytes,
+so the pin still means what the issuer published.
+
+A card's certificate is the opposite on both counts. Its signature covers the exact DER of
+its `tbsCertificate`, so changing a byte breaks the very thing you are verifying. And it
+arrives from the card, so it is attacker-controlled. A lenient parser there widens the input
+an attacker can feed you, for no gain.
+
+**5. OCSP from the leaf alone works for one CA and never for another.**
+
+The leaf-only CertID uses the AKI as `issuerKeyHash`. RFC 6960 defines `issuerKeyHash` as
+the hash of the issuer's public key. That equals the AKI only if the CA computed its key
+identifier as the SHA-1 of its public key — RFC 5280 §4.2.1.2's method (1). One CA did, so
+its requests name the right key; the other used a different method, so its requests name a
+key the responder has never seen.
+
+Other causes produce the same symptom and are worth ruling out: the second CA's cards are
+answered by a different responder, or the response is signed under a key you haven't listed
+as an anchor. The CertID cause is the one you can confirm offline — hash the CA's public key
+and compare it with its SKI.
+
+**6. "Any of my CAs" plus a serial match.**
+
+Take two issuing CAs, A and B, which share a responder. A card from CA A with serial 1234
+is revoked. A different, valid card from CA B also has serial 1234 — legal, because serials
+are only unique per issuer (RFC 5280 §4.1.2.2).
+
+An attacker on the network path captures the responder's `good` for B's card, then replays
+it when you check A's revoked card. Your client sees a signature that verifies under one of
+its anchors (B's, or B's designated responder) and a serial that matches, and accepts `good`.
+
+For it to work you need a serial collision across CAs, a position on the path to the
+responder (plain HTTP is normal for OCSP), and a captured answer still inside its
+`nextUpdate` window. With a single issuing CA it can't happen, because the serial is unique.
+
+RFC 6960 §3.2's first check closes it: the certificate identified in the response must
+correspond to the one in the request. That's the whole CertID — issuer-name hash and
+issuer-key hash as well as serial — and B's issuer hashes don't match A's. Requiring the
+verifying anchor to be the card's own issuer closes it too.
+
+---
+
 ## Things to try on a real card
 
 In rough order of risk. Everything in the first two groups is free.
@@ -537,6 +628,13 @@ In rough order of risk. Everything in the first two groups is free.
 9. Identify every counter on the card and what decrements it. Then decide which experiments
    you are *not* going to run.
 
+**Certificates** — free; nothing here touches a counter
+
+10. Read the card's certificate (often a plain read, no PIN). Note its issuer DN and
+    AKI, then find the CA certificate whose SKI matches. Verify the pair with
+    `openssl verify -partial_chain -CAfile ca.pem card.pem`, then with a strict library,
+    and explain any difference.
+
 ## Questions worth asking me
 
 - "Decode this ATR for me and tell me what I'll be speaking."
@@ -545,3 +643,6 @@ In rough order of risk. Everything in the first two groups is free.
 - "Given this card only supports X, what security claim can I honestly make?"
 - "Which of these probes costs me something if it fails?"
 - "Why would a card implement two certificates with different key usages?"
+- "Here's a certificate one library accepts and another refuses — what's wrong with it?"
+- "Which of these CAs should this card chain to, and how would I prove it?"
+- "Walk me through what an OCSP answer does and doesn't tell me about this card."
