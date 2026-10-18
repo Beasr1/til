@@ -1,4 +1,7 @@
-# 1. What changed between HTTP/1.1 and HTTP/2
+# 2. What changed between HTTP/1.1 and HTTP/2
+
+Assumes [file 01](01-foundations.md): requests and responses, and what a connection
+and a handshake cost.
 
 ## The problem that made HTTP/2
 

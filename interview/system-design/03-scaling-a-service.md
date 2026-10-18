@@ -77,7 +77,7 @@ survive machines coming and going.
 > **Teacher's aside.** The difference "per connection versus per request" bites with
 > long-lived connections. AWS documents that an NLB "routes each individual TCP connection
 > to a single target for the life of the connection." HTTP/2 and gRPC send many requests
-> over one connection (see [http/01, "HTTP/2 wraps everything in frames"](../../http/01-versions-and-framing.md#http2-wraps-everything-in-frames)),
+> over one connection (see [http/02, "HTTP/2 wraps everything in frames"](../../http/02-versions-and-framing.md#http2-wraps-everything-in-frames)),
 > so a layer-4 balancer in front of gRPC services balances *connections*, and one client
 > with one busy connection pins all its load on one server. The fix is a layer-7 balancer
 > that understands HTTP/2, or client-side balancing. People discover this when one pod

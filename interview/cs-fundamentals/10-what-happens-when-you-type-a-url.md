@@ -157,12 +157,12 @@ shares, and the client has the server's certificate. Three fields deserve a sent
   before encryption starts, so by default an observer can see which site you're visiting
   even though they can't see the page.
 - **ALPN** is how the HTTP version gets chosen inside this handshake rather than with an
-  extra round trip. The [http course, file 02](../../http/02-alpn-and-negotiation.md#alpn-negotiate-inside-the-handshake-youre-already-paying-for)
+  extra round trip. The [http course, file 03](../../http/03-alpn-and-negotiation.md#alpn-negotiate-inside-the-handshake-youre-already-paying-for)
   covers it, including why plain HTTP behaves differently.
 - **The certificate** is checked three ways: does the server hold its private key (the
   `CertificateVerify` signature), does the name match the one you asked for, and does a
   chain of signatures lead to a root you already trust. The
-  [http course, file 04](../../http/04-certificates-and-trust.md#the-three-questions-and-the-three-errors)
+  [http course, file 05](../../http/05-certificates-and-trust.md#the-three-questions-and-the-three-errors)
   is the depth on this, with the error message each check produces.
 
 A returning client can resume a previous session, and TLS 1.3 even allows sending data in
@@ -235,8 +235,8 @@ The response carries a **status code**, headers and a body:
 
 | Version | Transport | What changed | Depth |
 |---|---|---|---|
-| HTTP/1.1 | TCP | Text; one response at a time per connection | [http file 01](../../http/01-versions-and-framing.md#http11-is-a-byte-stream-with-no-envelope) |
-| HTTP/2 | TCP | Binary frames; many streams multiplexed on one connection | [http file 01](../../http/01-versions-and-framing.md#http2-wraps-everything-in-frames) |
+| HTTP/1.1 | TCP | Text; one response at a time per connection | [http file 02](../../http/02-versions-and-framing.md#http11-is-a-byte-stream-with-no-envelope) |
+| HTTP/2 | TCP | Binary frames; many streams multiplexed on one connection | [http file 02](../../http/02-versions-and-framing.md#http2-wraps-everything-in-frames) |
 | HTTP/3 | QUIC over UDP | Streams in the transport, so no TCP head-of-line blocking | [file 09 §9.8](09-networks-layers-and-tcp.md#98-head-of-line-blocking-and-why-quic-exists) |
 
 ## 10.8 On the server side

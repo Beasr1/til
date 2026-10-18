@@ -1,4 +1,4 @@
-# 4. Certificates, and where trust actually comes from
+# 5. Certificates, and where trust actually comes from
 
 ## The problem
 

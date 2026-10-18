@@ -358,7 +358,7 @@ in the receiver's buffer until the retransmission arrives, even data that has al
 arrived. That's **head-of-line blocking** at the transport layer.
 
 It matters for HTTP/2, which multiplexes many independent requests over one TCP
-connection ([http course, file 01](../../http/01-versions-and-framing.md#http2-wraps-everything-in-frames)).
+connection ([http course, file 02](../../http/02-versions-and-framing.md#http2-wraps-everything-in-frames)).
 One lost packet belonging to one response stalls *all* of them, because TCP doesn't know
 they're independent. QUIC fixes it by implementing streams itself over UDP, so a loss
 stalls only the stream it belongs to. HTTP/3 is HTTP over QUIC

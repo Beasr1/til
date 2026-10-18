@@ -36,7 +36,7 @@ Stage 2 · backend .......... http ──► go-services
 Stage 3 · design ........... interview/system-design
 
 Side tracks — independent, start any time
-  web ................ css, static-sites   (http/04 helps)
+  web ................ css, static-sites   (http/01 and 05 help)
   trust & hardware ... signatures ──► smartcards, firmware-update
   biometrics ......... fingerprint;  face ──► face/spoof
 ```
@@ -102,7 +102,7 @@ flowchart LR
         face[face] --> spoof[face/spoof]
     end
 
-    http04["http/04<br/>(stage 2)"] -.-> ss
+    http05["http/05<br/>(stage 2)"] -.-> ss
 ```
 
 ---
@@ -115,7 +115,7 @@ flowchart LR
 | **1 — CS foundations** | [interview/01](interview/01-how-the-loop-works.md), [cs-fundamentals](interview/cs-fundamentals/README.md), [dsa](interview/dsa/README.md) | What happens under your code (process, memory, transactions, TCP), and algorithms by pattern | `interview/01` first. Then cs-fundamentals and dsa in either order, or together |
 | **2 — Backend in production** | [http](http/README.md), [go-services](go-services/README.md), [postgres](postgres/README.md), [kafka](kafka/README.md), [clickhouse](clickhouse/README.md), [vector-search](vector-search/README.md), [schema-evolution](schema-evolution/README.md) | How the pieces of a real service fail, one at a time | http → go-services → postgres → kafka → clickhouse (needs postgres/10 and kafka/03). vector-search and schema-evolution any time |
 | **3 — Putting it together** | [system-design](interview/system-design/README.md) | Designing a whole system and defending it. Links back into stage 2 for depth | After stage 1. Stage 2 makes it far richer but isn't required |
-| **Web** | [css](css/README.md), [static-sites](static-sites/README.md) | Building and shipping front ends | Independent of each other. static-sites assumes general HTTP/TLS; http/04 covers it |
+| **Web** | [css](css/README.md), [static-sites](static-sites/README.md) | Building and shipping front ends | Independent of each other. static-sites assumes general HTTP/TLS; http/01 and 05 cover it |
 | **Trust and hardware** | [signatures](signatures/README.md), [smartcards](smartcards/README.md), [firmware-update](firmware-update/README.md) | What "signed" and "verified" actually prove, and how devices take and prove code | signatures first gives the vocabulary (integrity vs authenticity) the other two lean on |
 | **Biometrics** | [fingerprint](fingerprint/README.md), [face](face/README.md) → [face/spoof](face/spoof/README.md) | Recognition, its metrics, and attacks on it | `face/01` before `face/spoof` (stated). fingerprint is independent; its metrics chapter complements `face/01` |
 
@@ -147,7 +147,7 @@ flowchart LR
 | [firmware-update](firmware-update/README.md) | Replacing the code inside a USB device, and proving it worked | `01-why-firmware-updates-are-hard` |
 | [git](git/README.md) | Rebasing, force-pushing and commit identity without losing work | `01-what-a-commit-is` |
 | [go-services](go-services/README.md) | The parts of a Go service that fail slowly in production | `01-how-a-go-service-runs` |
-| [http](http/README.md) | Framing, version negotiation, localhost from the browser, TLS trust | `01-versions-and-framing` |
+| [http](http/README.md) | What HTTP is and rides on, framing, version negotiation, QUIC, TLS trust, origins and CORS | `01-foundations` |
 | [interview](interview/README.md) | Interview preparation as learning: dsa, cs-fundamentals, system-design | `01-how-the-loop-works` |
 | [kafka](kafka/README.md) | What Kafka actually promises an application | `01-what-kafka-is` |
 | [postgres](postgres/README.md) | Indexes, live schema changes and migrations on a busy database | `01-what-postgres-does-with-a-query` |

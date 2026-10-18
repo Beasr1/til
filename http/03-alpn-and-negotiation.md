@@ -1,4 +1,4 @@
-# 2. How the version gets chosen
+# 3. How the version gets chosen
 
 ## The chicken and egg
 

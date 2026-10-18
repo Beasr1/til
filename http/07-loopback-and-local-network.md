@@ -1,4 +1,7 @@
-# 3. Reaching localhost from a web page
+# 7. Reaching localhost from a web page
+
+Assumes [file 06](06-origins-and-cors.md): what an origin is, CORS and its preflight,
+and CSRF.
 
 ## The problem
 
