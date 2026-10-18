@@ -37,8 +37,12 @@ Stage 3 · design ........... interview/system-design
 
 Side tracks — independent, start any time
   web ................ css, static-sites   (http/01 and 05 help)
-  trust & hardware ... signatures ──► smartcards, firmware-update
+  trust & hardware ... signatures ──► smartcards, firmware-update, android
   biometrics ......... fingerprint;  face ──► face/spoof
+
+Track — real-time networking   (after stage 1, plus http/04)
+  rust ──► realtime-audio
+  http/04 + cs-fundamentals ──► peer-to-peer
 ```
 
 In the diagrams, solid arrows mean a chapter in the later course says "read this first".
@@ -95,6 +99,7 @@ flowchart LR
     subgraph T["Trust and hardware"]
         sig[signatures] -.-> sc[smartcards]
         sig -.-> fw[firmware-update]
+        sig -.-> andr[android]
     end
 
     subgraph B["Biometrics"]
@@ -103,6 +108,27 @@ flowchart LR
     end
 
     http05["http/05<br/>(stage 2)"] -.-> ss
+```
+
+**The real-time networking track**
+
+```mermaid
+flowchart LR
+    csf["cs-fundamentals<br/>(stage 1)"]
+    http04["http/04 QUIC<br/>(stage 2)"]
+    go["go-services<br/>(stage 2)"]
+
+    subgraph R["Real-time networking"]
+        rust[rust]
+        p2p[peer-to-peer]
+        ra[realtime-audio]
+    end
+
+    http04 --> p2p
+    csf --> p2p
+    csf --> ra
+    go -.-> rust
+    rust -.-> ra
 ```
 
 ---
@@ -116,7 +142,8 @@ flowchart LR
 | **2 — Backend in production** | [http](http/README.md), [go-services](go-services/README.md), [postgres](postgres/README.md), [kafka](kafka/README.md), [clickhouse](clickhouse/README.md), [vector-search](vector-search/README.md), [schema-evolution](schema-evolution/README.md) | How the pieces of a real service fail, one at a time | http → go-services → postgres → kafka → clickhouse (needs postgres/10 and kafka/03). vector-search and schema-evolution any time |
 | **3 — Putting it together** | [system-design](interview/system-design/README.md) | Designing a whole system and defending it. Links back into stage 2 for depth | After stage 1. Stage 2 makes it far richer but isn't required |
 | **Web** | [css](css/README.md), [static-sites](static-sites/README.md) | Building and shipping front ends | Independent of each other. static-sites assumes general HTTP/TLS; http/01 and 05 cover it |
-| **Trust and hardware** | [signatures](signatures/README.md), [smartcards](smartcards/README.md), [firmware-update](firmware-update/README.md) | What "signed" and "verified" actually prove, and how devices take and prove code | signatures first gives the vocabulary (integrity vs authenticity) the other two lean on |
+| **Trust and hardware** | [signatures](signatures/README.md), [smartcards](smartcards/README.md), [firmware-update](firmware-update/README.md), [android](android/README.md) | What "signed" and "verified" actually prove, and how devices take, run and attest code | signatures first gives the vocabulary (integrity vs authenticity) the others lean on. android stands alone otherwise |
+| **Real-time networking** | [rust](rust/README.md), [peer-to-peer](peer-to-peer/README.md), [realtime-audio](realtime-audio/README.md) | Building networked, live systems: Rust for a Go programmer, direct connections through NATs, and voice end to end | peer-to-peer needs http/04 (QUIC) and cs-fundamentals file 09 (stated). realtime-audio builds on cs-fundamentals files 02 and 04; its examples use Rust crates, so rust first helps. rust assumes you already write Go |
 | **Biometrics** | [fingerprint](fingerprint/README.md), [face](face/README.md) → [face/spoof](face/spoof/README.md) | Recognition, its metrics, and attacks on it | `face/01` before `face/spoof` (stated). fingerprint is independent; its metrics chapter complements `face/01` |
 
 ---
@@ -130,6 +157,8 @@ flowchart LR
   "If you're short on time" section cuts it further. See the [interview README](interview/README.md).
 - **Something broke in production.** Go straight to the course for that component. Every
   course opens with a foundations chapter, so you won't land mid-story.
+- **Building a live, networked app.** cs-fundamentals → http/01 and http/04 → rust →
+  peer-to-peer → realtime-audio.
 - **A side track for its own sake.** Each side track stands alone. Start with its first
   course in the table above.
 
@@ -139,6 +168,7 @@ flowchart LR
 
 | Course | One line | Start at |
 |---|---|---|
+| [android](android/README.md) | How an Android app is isolated, signed, booted and attested, and how each defence is attacked | `01-the-android-platform` |
 | [clickhouse](clickhouse/README.md) | What ClickHouse does with the rows an application sends it | `01-what-clickhouse-does-with-a-table` |
 | [css](css/README.md) | Stateful, animated UI with little or no JavaScript | `01-foundations` |
 | [docker](docker/README.md) | The build cache, and how it ships broken images silently | `01-images-and-layers` |
@@ -150,7 +180,10 @@ flowchart LR
 | [http](http/README.md) | What HTTP is and rides on, framing, version negotiation, QUIC, TLS trust, origins and CORS | `01-foundations` |
 | [interview](interview/README.md) | Interview preparation as learning: dsa, cs-fundamentals, system-design | `01-how-the-loop-works` |
 | [kafka](kafka/README.md) | What Kafka actually promises an application | `01-what-kafka-is` |
+| [peer-to-peer](peer-to-peer/README.md) | Connecting two machines directly when both sit behind NATs and firewalls | `01-foundations` |
 | [postgres](postgres/README.md) | Indexes, live schema changes and migrations on a busy database | `01-what-postgres-does-with-a-query` |
+| [realtime-audio](realtime-audio/README.md) | Capturing, sending and playing voice live, and where the milliseconds go | `01-foundations` |
+| [rust](rust/README.md) | Rust taught by contrast with Go: ownership, errors, traits, async and tokio | `01-foundations` |
 | [schema-evolution](schema-evolution/README.md) | Changing a data format when you don't control the reader | `01-the-installed-client-problem` |
 | [signatures](signatures/README.md) | Hashes, MACs and signatures: what each proves, and SSH signing | `01-foundations` |
 | [smartcards](smartcards/README.md) | Contact smart cards, from power-up to proving genuineness | `01-what-a-smart-card-is` |
