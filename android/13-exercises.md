@@ -1,4 +1,4 @@
-# 12. Exercises & answers
+# 13. Exercises & answers
 
 Worked answers to every **Check yourself**, then things to try and questions to bring back.
 Read an answer only after you've committed to one — the wrong answers here are the ones that
@@ -359,6 +359,162 @@ collapses it back into a file-09 defence.
 
 ---
 
+## File 11 — Key attestation, field by field
+
+**1. Why `attestationApplicationId` is weaker than `verifiedBootState`.**
+Both are inside one blob carrying one genuine TEE signature, so the signature doesn't
+distinguish them. What distinguishes them is **what the TEE can determine for itself**.
+
+`verifiedBootState` the secure environment *measures*: it participates in boot verification and
+knows which key verified the images and whether the bootloader is locked. Nothing in the normal
+world is consulted, so nothing in the normal world can change it — it lands in
+`hardwareEnforced`.
+
+The TEE has no way to know which app is calling it. It has no view of the package manager, no
+notion of UIDs, no access to APK signatures. It is *handed* a package name and some digests by
+the Android keystore daemon in the normal world, and it signs them. That lands in
+`softwareEnforced`, which AOSP says "can be trusted as long as the device is running an
+operating system that complies with the Android Platform Security Model".
+
+So the signature attests that *keystore said this*, not that it is true. A hardware signature
+over a software-asserted field proves the software said it.
+
+**2. The verifier that skips `RootOfTrust`.**
+Its app-identity check is worth nothing, because the only thing that made
+`attestationApplicationId` believable was the conditional in AOSP's definition — "as long as
+the device is running an operating system that complies with the Android Platform Security
+Model" — and `RootOfTrust` is the *only* evidence in the attestation about whether that
+condition holds. Skip it and you are trusting a self-report from an OS you have not established
+anything about.
+
+The device state that defeats it: **unlocked bootloader running a modified OS** —
+`verifiedBootState` would read `Unverified`, `deviceLocked` false, `verifiedBootKey` 32 zero
+bytes. The attacker patches keystore (or anything feeding it) to report your package name and
+your signing digest, the TEE faithfully signs that claim, the chain validates to Google's root,
+and your check passes. Nothing was forged; the component that fills in the field was simply the
+attacker's.
+
+Note the asymmetry with question 1 — this is why the two checks are not independent and not
+interchangeable. §11.4's reasoning chain runs one way only: boot state first, then app identity.
+
+**3. Works on test devices, fails on every real phone.**
+Almost certainly **Play App Signing**: you are comparing against your **upload** key's
+certificate digest, while the APK users install has been re-signed by Google with the **app
+signing** key. Your test builds are signed with your own release/upload key, so they match;
+nothing from the store ever will.
+
+Where to get the right value: Play Console → Setup → App signing → the SHA-256 fingerprint
+under *App signing key certificate*. (And if you ship to users through more than one route,
+you may legitimately need several digests — Google's matcher accepts *any* expected digest
+present in the candidate's set.)
+
+**4. The relay attack against the nine checks.**
+The attacker intercepts `generateAttestedKey()` on a rooted phone and relays it to a clean,
+locked device, returning that device's genuine response.
+
+Honest passes — nothing forged, nothing extracted:
+
+| Check | Why it passes honestly |
+|---|---|
+| 1 path to Google's root | the chain was issued by real secure hardware |
+| 2 revocation | that device's key isn't revoked; it was never leaked |
+| 3 RKP validity | freshly provisioned, well within validity |
+| 4 extension parse | a single, genuine extension on the genuine leaf |
+| 5 challenge | **your** nonce was relayed and embedded by the remote TEE |
+| 6 `origin = GENERATED` | genuinely generated inside the remote TEE |
+| 7 security level | genuinely `TrustedEnvironment` or `StrongBox` |
+| 8 `RootOfTrust` | the remote device really is locked and `Verified` |
+
+Eight of nine pass without a single lie, which is Quarkslab's point: "We do not attack the
+secure hardware, we do not extract keys, and we do not need a leaked keybox."
+
+Only check 9 sees anything wrong — the `attestationApplicationId` belongs to a different app
+(and a different device). That makes 9 **structural** rather than cosmetic: it is not a bonus
+hardening step on top of device integrity, it is the only check that **binds the attestation to
+the asker**. Without it, device integrity is being proven about *some* device, which is a
+statement with no subject.
+
+**5. "Attestation verified: strict app ID" without comparing anything.**
+Two configurations, both from Google's own library:
+
+(a) `Verifier`'s `expectedAttestationApplicationId` constructor parameter is left at its default
+of `null` (`Verifier.kt:155`). `STRICT` is
+`expectedId?.isSatisfiedBy(actualId) ?: true` (`ConstraintConfig.kt:428–431`) — a null expected
+value short-circuits to **true**.
+
+(b) An `AttestationApplicationId` *is* supplied but has empty `packages` **and** empty
+`signatures`. `isSatisfiedBy` only tests the lists that are non-empty (`Extension.kt:667–678`),
+so with both empty it falls through to `return true`.
+
+Both log success having compared nothing. The general lesson is worth more than the two cases:
+a check whose "no expectation configured" branch returns *pass* will eventually be deployed with
+no expectation configured. Fail closed — assert at startup that the expected value is present
+and non-empty.
+
+**6. Expired root trusted, RKP validity enforced.**
+Not a contradiction, because the two statements are about different positions in the chain.
+
+The root is the **trust anchor**, and RFC 5280 §6.1 excludes the anchor from the certification
+path ([`pki/01` §1.6](../pki/01-what-a-certificate-is.md)) — so no path check, expiry included,
+applies to it. Its validity dates were a statement by an issuer, and an anchor has no issuer
+above it to make that statement meaningfully. Google is therefore free to say "keep trusting
+chains to `f92009e853b6b045` regardless of validity period", and Android applies the same
+instinct to TLS anchors.
+
+RKP intermediates are **in** the path, so check 2 applies to them normally. More than that,
+their short life is the *mechanism*: Google calls the shorter expiration "an important
+consideration of the threat model… intended to allow for quicker responses to compromises".
+Ignoring expiry there would discard the containment property the design was bought with.
+
+**7. A leaked factory keybox.**
+With the private key, the attacker signs their own leaf containing whatever `KeyDescription`
+they like, chaining to Google's real root.
+
+| Check | Catches it? |
+|---|---|
+| 1 path validation | **no** — the chain is cryptographically valid to the real root |
+| 5 challenge | **no** — they embed your fresh nonce; they control the contents |
+| 6, 7, 8 `origin`, security level, `RootOfTrust` | **no** — all forgeable, because they are writing the extension themselves. This is the one case where `hardwareEnforced` lies, because the hardware's *key* has escaped the hardware |
+| 9 app ID | **no** — same reason |
+| **2 revocation** | **yes, once Google lists the serial** — the only check that can, and only after the leak is known |
+
+So the honest position is that a leaked keybox defeats content checks entirely; the defence is
+revocation, and it is reactive.
+
+Requiring `REMOTELY_PROVISIONED` (`provider/KeyAttestationCertPath.kt:167`) buys you a
+structural improvement rather than a cryptographic one: RKP keys are per-app, rotated, valid
+around two months, and never exist outside the device's secure environment — so there is no
+factory keybox to leak, the blast radius of any single compromise is one app briefly rather than
+~100k devices for years, and Google can simply stop provisioning compromised software. Google's
+framing is that attestation key leaks "don't apply to attestation keys certified by the newer
+Remote Key Provisioning (RKP) mechanism". On devices launching with Android 16 it's the only
+mechanism anyway.
+
+**8. An SDK wrapped by third parties, each with their own signing key.**
+**What to collect from each client:** the **SHA-256 digest of the signing certificate of the APK
+as installed** — which for a Play-distributed app is the app signing certificate from their Play
+Console, not their upload certificate — plus the **package name** of their app, and a minimum
+`version` if you want a downgrade floor. Then configure the expected set so that any one of your
+clients' (package, digest) pairs satisfies the check; Google's matcher is already "any expected
+digest appears in the candidate's set".
+
+**Why a chain check is the wrong mechanism for that part:** app signing certificates are
+self-signed. There is no issuer CA, nothing above them, and no path to build
+([`pki/03` §3.4](../pki/03-four-chains-compared.md)). The control is a **pinned digest**. The
+chain check in this system is a different chain entirely — the attestation chain, terminating
+at Google's attestation root — and it says nothing about who wrote the app except through the
+digests carried in this field.
+
+**What breaks on rotation:** every attestation from that client's updated app reports the new
+digest and fails your check, locking out their whole user base at once. You need to accept old
+and new digests through the overlap, which means (a) clients must tell you *before* they rotate,
+and (b) your expected-digest set has to be configuration you can change without a deploy. Note
+that v3 signing lineage ([file 03](03-signing-is-identity.md) §3.2) lets the *device* accept the
+update — it does nothing for *your server*, which only ever sees the new digest and has no idea
+it was endorsed by the old key.
+
+---
+
 ## Things to try
 
 Safe on your own device or an emulator, against your own builds — no third-party target:
@@ -382,6 +538,23 @@ Safe on your own device or an emulator, against your own builds — no third-par
 - **Read a real verdict.** Wire Play Integrity (or a Key Attestation request) into a test
   build and inspect the returned verdict / certificate chain on *your own* locked and then
   unlocked device — watch the device-integrity label change (files 05, 10).
+- **Dump an attestation chain and read the leaf.** Generate a Keystore key with
+  `setAttestationChallenge`, call `KeyStore.getCertificateChain`, write the certificates out and
+  run `openssl x509 -text -noout` on the leaf. Confirm `CN=Android Keystore Key`, serial `1`,
+  and the extension at `1.3.6.1.4.1.11129.2.1.17` (file 11 §11.1).
+- **Find which list each field is in.** Parse that extension and print the tags present in
+  `softwareEnforced` versus `hardwareEnforced`. Locate `attestationApplicationId` in one and
+  `rootOfTrust` in the other — §11.4's whole argument, on your own device.
+- **Watch the boot state change the meaning.** Repeat the dump on a locked device and on one
+  with an unlocked bootloader. Compare `verifiedBootState`, `deviceLocked` and `verifiedBootKey`
+  (32 zero bytes when unlocked), then re-read §11.4 and say what the second device's
+  `attestationApplicationId` is worth (files 05, 11).
+- **Confirm the digest you'd actually compare.** `keytool -printcert -jarfile your.aab` for your
+  upload certificate, then the SHA-256 under *App signing key certificate* in the Play Console.
+  Note that they differ — that difference is file 11 §11.5's five-minute bug.
+- **Fetch both roots and the status list.** `curl https://android.googleapis.com/attestation/root`
+  and `.../attestation/status`. Note there are two roots with different key algorithms, and that
+  the status list contains only the non-normal entries (file 11 §11.2, §11.8).
 
 ## Questions worth asking me
 
@@ -397,3 +570,11 @@ Safe on your own device or an emulator, against your own builds — no third-par
   did we actually buy?"
 - "Why did unlocking the bootloader wipe the device, and what exactly would be at risk if it
   didn't?"
+- "Here's our attestation verification code — walk the nine checks in file 11 §11.7 and tell me
+  which ones we're not doing."
+- "Which fields in this attestation dump may I believe, and what does each one depend on?"
+- "We ship an SDK into clients' apps. Design the app-identity check across all of them, and tell
+  me what happens when one client rotates their signing key."
+- "Key attestation or Play Integrity for our case? Argue it on the GMS dependency alone, then on
+  effort."
+- "Could the relay attack work against us as currently configured? Show me where it gets in"

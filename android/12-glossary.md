@@ -1,4 +1,4 @@
-# 11. Glossary
+# 12. Glossary
 
 Reference, not reading. The number in parentheses is the chapter where the term is motivated.
 
@@ -146,9 +146,9 @@ Reference, not reading. The number in parentheses is the chapter where the term 
 | **Keystore** | Android's key store; hardware-backed keys live in and never leave the TEE/StrongBox (10) |
 | **KeyMint / Keymaster** | The TEE component guarding Keystore keys. Renamed Keymaster → KeyMint in Android 12 (10) |
 | **Key Attestation** | The TEE issues a certificate chain vouching for a key *and* the device state (boot/lock/patch). Since Android 7.0 (10) |
-| **Attestation extension** | The field in the leaf certificate carrying the attested properties (10) |
+| **Attestation extension** | The field in the leaf certificate carrying the attested properties. OID `1.3.6.1.4.1.11129.2.1.17`; **only the first occurrence in a chain may be trusted** (10, 11) |
 | **ATTESTATION_CHALLENGE** | The verifier's fresh nonce, bound into the attestation to stop replay (10) |
-| **Remote Key Provisioning** | Attestation signing keys fetched from Google at runtime instead of factory batches; per-app, rotated (10) |
+| **Remote Key Provisioning** (RKP) | Attestation signing keys fetched from Google at runtime instead of factory batches; per-app, rotated, valid ~2 months. Mandated in Android 13; the only mechanism on devices launching with Android 16 (10, 11) |
 | **Play Integrity API** | Google's managed verdict service; the token is verified **server-side** (10) |
 | **`MEETS_DEVICE_INTEGRITY`** | Genuine certified device; on Android 13+, hardware-backed locked-bootloader proof (10) |
 | **`MEETS_BASIC_INTEGRITY`** | Basic checks pass; bootloader may be unlocked (10) |
@@ -158,4 +158,23 @@ Reference, not reading. The number in parentheses is the chapter where the term 
 | **SafetyNet Attestation** | The predecessor API. Deprecated 2022, **fully turned down January 2025** (10) |
 | **`ctsProfileMatch` / `basicIntegrity`** | SafetyNet's two verdicts; roughly the ancestors of `MEETS_DEVICE_INTEGRITY` / `MEETS_BASIC_INTEGRITY` (10) |
 | **CTS** | Compatibility Test Suite — the certification a device matches for `ctsProfileMatch` / device integrity (10) |
-| **GMS** | Google Mobile Services. Play Integrity depends on it, so GMS-less devices can't produce a verdict (10) |
+| **GMS** | Google Mobile Services. Play Integrity depends on it, so GMS-less devices can't produce a verdict. Key attestation does **not** need it (10, 11) |
+
+## The attestation extension, field by field (11)
+
+| Term | Meaning |
+|---|---|
+| **`KeyDescription`** | The extension's top-level structure: versions, security levels, the challenge, and the two authorisation lists (11) |
+| **`AuthorizationList`** | The field bag. One ASN.1 type, used for **both** lists — so a tag's placement, not its name, tells you who asserted it (11) |
+| **`hardwareEnforced`** | Asserted by the TEE/StrongBox; AOSP: "not controlled by the platform". Where `rootOfTrust`, `origin` and the device IDs live (11) |
+| **`softwareEnforced`** | Asserted by Android platform code; trustworthy only "as long as the device is running an operating system that complies with the Android Platform Security Model". Where `attestationApplicationId` lives (11) |
+| **`attestationApplicationId`** [709] | Package names + versions, and SHA-256 digests of the app's **signing certificates**. Software-enforced. The field that binds an attestation to the app that asked (11) |
+| **`signature_digests`** | The SHA-256 digests inside the above. For a Play-distributed app, of the **app signing** certificate — not the upload certificate (11) |
+| **`RootOfTrust`** [704] | Hardware-enforced: `verifiedBootKey`, `deviceLocked`, `verifiedBootState`, `verifiedBootHash` (11) |
+| **`verifiedBootState`** | `Verified` / `SelfSigned` / `Unverified` / `Failed` — file 05's GREEN / YELLOW / ORANGE / RED, named (5, 11) |
+| **`origin`** [702] | Where the key came from. Must be `GENERATED` — an **imported** key proves nothing about where it has been (11) |
+| **`attestationVersion`** | Which schema you're reading. 1–4 = Keymaster 2.0–4.1; 100–500 = KeyMint 1.0–5.0 (11) |
+| **Attestation root** | Google's anchor, published at `android.googleapis.com/attestation/root`. Currently **two**: the RSA `f92009e853b6b045` root and the ECDSA `Key Attestation CA1` (11) |
+| **Revocation status list** | `android.googleapis.com/attestation/status` — JSON keyed by serial, `REVOKED` or `SUSPENDED` (11) |
+| **Keybox** | The factory-provisioned attestation keys and chain for a device. Leaked keyboxes let attackers mint chains that validate to Google's root (11) |
+| **Relay attack** | Forwarding an attestation request to a clean, locked device. Forges nothing; defeated only by checking `attestationApplicationId` (11) |

@@ -12,7 +12,7 @@ I wrote this as a teacher, not as a peer. That means:
 
 - I explain things you might already know. Skim if so.
 - *Why* before *how*, and the mental model before the mechanism.
-- Every file ends with **Check yourself** questions. Answers are in [`12-exercises.md`](12-exercises.md).
+- Every file ends with **Check yourself** questions. Answers are in [`13-exercises.md`](13-exercises.md).
 - Android has twenty years of jargon — `init_boot`, Zygote, DEX, Zygisk, AVB — that everyone
   pretends is obvious. None of it is.
 
@@ -52,6 +52,7 @@ say", this is which.
 | **Frida** — [frida.re/docs](https://frida.re/docs/home/) | `frida-server` vs `frida-gadget`, GumJS, hooking |
 | **LSPosed / Xposed** — [github.com/LSPosed](https://github.com/LSPosed/LSPosed) | Runtime method hooking on ART |
 | **Shizuku** — [github.com/RikkaApps/Shizuku](https://github.com/RikkaApps/Shizuku) | The privileged-process + Binder bridge |
+| **Key attestation verifier** — [github.com/android/keyattestation](https://github.com/android/keyattestation) | Google's own Kotlin verifier. Cited by `file:line` in file 11 for what the checks actually are, and what its defaults don't check |
 | **apktool / smali / jadx** | [apktool](https://apktool.org), [smali/baksmali](https://github.com/JesusFreke/smali), [jadx](https://github.com/skylot/jadx) — the repackaging pipeline |
 
 AOSP and the developer docs are free and authoritative. The tools are open source; their
@@ -83,13 +84,14 @@ READMEs and docs are the reference, not the forum posts that mirror them.
 |---|------|--------|
 | 9 | [Defences and the arms race](09-defences-and-the-arms-race.md) | Root/instrumentation detection, integrity checks, obfuscation — and why each is beatable |
 | 10 | [**Hardware-backed attestation**](10-hardware-backed-attestation.md) | ⭐ The TEE, Key Attestation, Play Integrity, server-side verification — the one thing that holds |
+| 11 | [**Key attestation, field by field**](11-key-attestation-in-depth.md) | ⭐ The chain, the extension, hardware- vs software-enforced fields, the server-side check order, revocation — and what the app-signing digest really proves |
 
 ### Reference
 
 | # | File | |
 |---|------|--|
-| 11 | [Glossary](11-glossary.md) | Every abbreviation, in one place |
-| 12 | [Exercises & answers](12-exercises.md) | Worked answers to every **Check yourself**, plus things to try |
+| 12 | [Glossary](12-glossary.md) | Every abbreviation, in one place |
+| 13 | [Exercises & answers](13-exercises.md) | Worked answers to every **Check yourself**, plus things to try |
 
 ## If you're short on time
 
@@ -100,6 +102,8 @@ READMEs and docs are the reference, not the forum posts that mirror them.
 | To understand a repackaging finding ("the app can be rebuilt and bypassed") | 3, then 7 |
 | To know what a Frida hook can and can't do | 4, then 8 |
 | To design a defence that actually holds | 10 (and accept that 9 alone never does) |
+| To actually *implement* attestation verification | 10, then 11 §11.7 |
+| To know whether attestation proves your app wasn't repackaged | 11 §11.9 |
 
 ## The one-paragraph summary of everything
 
