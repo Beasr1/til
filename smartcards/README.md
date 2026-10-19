@@ -54,6 +54,11 @@ Read 1–4 in order. They build.
 | 6 | [Proving a card is genuine](06-proving-genuineness.md) | Explain what a clone can and cannot fake, which direction of a handshake proves it, why one scheme can need two different mechanisms, and which credential actually gates which — worked through two real national eID schemes |
 | 7 | [Verifying the card's certificate](07-verifying-the-card-certificate.md) | Say exactly what "chains to a trust anchor" checks, find the right CA when an issuer has several, explain why one library refuses a certificate another accepts, read an OCSP answer for what it does and doesn't prove, and say which certificates in a chain a revocation check actually covered |
 
+Chapter 7 is X.509 in anger. If you want the layer *underneath* it — what an issuer CA is,
+why path building and path validation are different jobs, and how a card's chain compares with
+a TLS chain or an Android attestation chain — that's the [`pki`](../pki/README.md) course. It
+links back here for the hard parts rather than repeating them.
+
 Reference, not reading:
 
 | # | File | |
