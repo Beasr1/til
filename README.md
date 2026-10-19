@@ -37,7 +37,7 @@ Stage 3 · design ........... interview/system-design
 
 Side tracks — independent, start any time
   web ................ css, static-sites   (http/01 and 05 help)
-  trust & hardware ... signatures ──► smartcards, firmware-update, android
+  trust & hardware ... signatures ──► pki ──► android;  smartcards, firmware-update
   biometrics ......... fingerprint;  face ──► face/spoof
 
 Track — real-time networking   (after stage 1, plus http/04)
@@ -101,6 +101,9 @@ flowchart LR
         sig[signatures] -.-> sc[smartcards]
         sig -.-> fw[firmware-update]
         sig -.-> andr[android]
+        sig -.-> pki[pki]
+        pki --> andr
+        pki -.-> sc
     end
 
     subgraph B["Biometrics"]
@@ -143,7 +146,7 @@ flowchart LR
 | **2 — Backend in production** | [http](http/README.md), [go-services](go-services/README.md), [api-orchestration](api-orchestration/README.md), [postgres](postgres/README.md), [kafka](kafka/README.md), [clickhouse](clickhouse/README.md), [vector-search](vector-search/README.md), [schema-evolution](schema-evolution/README.md) | How the pieces of a real service fail, one at a time | http → go-services → postgres → kafka → clickhouse (needs postgres/10 and kafka/03). api-orchestration after go-services (needs its files 01, 02, 04 and 05). vector-search and schema-evolution any time |
 | **3 — Putting it together** | [system-design](interview/system-design/README.md) | Designing a whole system and defending it. Links back into stage 2 for depth | After stage 1. Stage 2 makes it far richer but isn't required |
 | **Web** | [css](css/README.md), [static-sites](static-sites/README.md) | Building and shipping front ends | Independent of each other. static-sites assumes general HTTP/TLS; http/01 and 05 cover it |
-| **Trust and hardware** | [signatures](signatures/README.md), [smartcards](smartcards/README.md), [firmware-update](firmware-update/README.md), [android](android/README.md) | What "signed" and "verified" actually prove, and how devices take, run and attest code | signatures first gives the vocabulary (integrity vs authenticity) the others lean on. android stands alone otherwise |
+| **Trust and hardware** | [signatures](signatures/README.md), [pki](pki/README.md), [smartcards](smartcards/README.md), [firmware-update](firmware-update/README.md), [android](android/README.md) | What "signed" and "verified" actually prove, and how devices take, run and attest code | signatures first gives the vocabulary (integrity vs authenticity) the others lean on. Then pki, which `android/11` states as a prerequisite and which `smartcards/07` reads better after. firmware-update stands alone |
 | **Real-time networking** | [rust](rust/README.md), [peer-to-peer](peer-to-peer/README.md), [realtime-audio](realtime-audio/README.md) | Building networked, live systems: Rust for a Go programmer, direct connections through NATs, and voice end to end | peer-to-peer needs http/04 (QUIC) and cs-fundamentals file 09 (stated). realtime-audio builds on cs-fundamentals files 02 and 04; its examples use Rust crates, so rust first helps. rust assumes you already write Go |
 | **Biometrics** | [fingerprint](fingerprint/README.md), [face](face/README.md) → [face/spoof](face/spoof/README.md) | Recognition, its metrics, and attacks on it | `face/01` before `face/spoof` (stated). fingerprint is independent; its metrics chapter complements `face/01` |
 
@@ -185,6 +188,7 @@ flowchart LR
 | [interview](interview/README.md) | Interview preparation as learning: dsa, cs-fundamentals, system-design | `01-how-the-loop-works` |
 | [kafka](kafka/README.md) | What Kafka actually promises an application | `01-what-kafka-is` |
 | [peer-to-peer](peer-to-peer/README.md) | Connecting two machines directly when both sit behind NATs and firewalls | `01-foundations` |
+| [pki](pki/README.md) | Certificate chains: what an issuer CA is, building vs validating a path, and the trust store you have to operate | `01-what-a-certificate-is` |
 | [postgres](postgres/README.md) | Indexes, live schema changes and migrations on a busy database | `01-what-postgres-does-with-a-query` |
 | [realtime-audio](realtime-audio/README.md) | Capturing, sending and playing voice live, and where the milliseconds go | `01-foundations` |
 | [rust](rust/README.md) | Rust taught by contrast with Go: ownership, errors, traits, async and tokio | `01-foundations` |
