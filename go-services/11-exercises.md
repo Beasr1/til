@@ -1,4 +1,4 @@
-# 10. Exercises
+# 11. Exercises
 
 Worked answers to every **Check yourself** question, then things to try and questions
 worth asking me.
@@ -457,6 +457,88 @@ called it. Put `defer wg.Done()` at the top of the per-task function so it runs 
 
 ---
 
+## File 10 — Routing and frameworks
+
+**1. Precedence, a 405 and a conflict.**
+
+`GET /items/latest` goes to the `GET /items/latest` handler. `GET /items/{id}` matches it too, but
+`/items/latest` matches a strict subset of `/items/{id}`'s requests, so it's more specific, and
+specificity decides, not order. `PUT /items/42` matches no pattern for its method, but two
+patterns match its path with other methods, so it gets `405 Method Not Allowed` with
+`Allow: DELETE, GET, HEAD` (HEAD because GET implies it). Registering `/{kind}/latest` panics.
+It and `GET /items/{id}` both match `GET /items/latest`, and neither is more specific:
+`/{kind}/latest` matches `/kind/latest`, which the other doesn't, and `GET /items/{id}` matches
+`/items/id`, which `/{kind}/latest` doesn't. Measured, the panic names both patterns and that
+example path. The program fails at startup, which is the point: the ambiguity is found before any
+request is served.
+
+**2. `go 1.21` and `GET /health`.**
+
+404. GODEBUG defaults follow the `go` line, and `httpmuxgo121` changed in 1.22 with an old value
+of `1`, so a module declaring 1.21 gets the Go 1.21 mux even when built with Go 1.26. That mux has
+no method syntax. A pattern that doesn't start with `/` is host plus path, so `GET /health` is
+registered for a host called `GET `, and no request ever matches it (measured on an equivalent
+program: every route answered 404). Nothing failed because the 1.21 mux rejected no pattern
+"unless it was empty or conflicted with an existing pattern", and to the compiler the pattern is
+just a string. `go vet` would flag `r.PathValue` as too new for the module if a handler called it,
+but not a method in a pattern. The fix is to raise the `go` line to 1.22 or later, reading what
+else changes with it (chapter 1's `GOMAXPROCS` default changes at 1.25), or to put
+`//go:debug httpmuxgo121=0` above `package main` (measured: that alone restored the new mux).
+
+**3. `go audit(c)` reading `c.Param` later.**
+
+In production it logs other requests' ids. gin puts the `*gin.Context` back in a `sync.Pool` when
+the handler returns, and `ServeHTTP` hands the same struct to a later request, overwriting
+`Request` and calling `reset()`, which clears `Params` for refilling. The goroutine holds a pointer
+to that struct, so 10 ms later it reads whichever request is using it now. Measured with a 5 ms
+delay: 490 of 500 goroutines read another request's id. Tests that send one request at a time
+pass, because nothing takes the context out of the pool before the goroutine reads it, so it still
+holds the original values. A `-race` build reports a data race between the read in
+`(*Context).Param` and the write in `(*Context).reset`, called from `(*Engine).ServeHTTP`. Fix it
+with `c.Copy()`, or better, copy what the goroutine needs into locals (`id := c.Param("id")`)
+before the `go` statement.
+
+**4. `TimeoutHandler` in front of gin, `c` passed to queries.**
+
+At two seconds the client gets the `503 Service Unavailable` that `TimeoutHandler` writes. The
+queries keep running for the full 30 seconds. `TimeoutHandler` puts its deadline on the request's
+context, `c.Request.Context()`. With `ContextWithFallback` false, `c.Done()` returns nil and
+`c.Deadline()` reports none, so a driver waiting on `c` never sees the deadline (measured: under a
+200 ms `TimeoutHandler`, `work(c, 1s)` ran the full second). Each timed-out request holds a
+database connection for 30 seconds after its client was told it failed. Under load the pool
+empties and healthy requests start timing out too, which is chapter 3's load amplifier. The
+one-line fix is `engine.ContextWithFallback = true` where the engine is built. The per-call fix,
+which also works in code shared with non-gin services, is to pass `c.Request.Context()`.
+
+**5. Rewriting a gin service on `ServeMux` "for performance".**
+
+It would save nothing, and cost a little. Measured, gin routed a one-parameter path in 28 ns and
+`ServeMux` in 75 ns, so the rewrite adds about 50 ns a request. At 2,000 requests a second that's
+0.1 ms of CPU per second, about 0.01% of one core (computed). Each request also makes two database
+queries, each at least one network round trip, and even a loopback HTTP request took 30 µs, so
+routing is well under 1% of the request either way. What the rewrite would really change: every
+handler and middleware signature, the binding and validation code, wrong-method 404s becoming
+405s, HEAD handling, the dependency tree (19 compiled-in modules to none) and binary size, and
+context handling, since `r.Context()` is always the request's context. Those can be good reasons
+to move, but they're arguments about maintenance and dependencies, not speed. Without them, keep
+gin, set `ContextWithFallback` and `HandleMethodNotAllowed`, and look for `c` passed as a context
+and goroutines holding `c`.
+
+**6. `c.Copy()` goroutines failing after `ContextWithFallback = true`.**
+
+`c.Copy()` copies the params and keys, but keeps the same `engine` pointer and the same
+`*http.Request`. With the flag on, the copy's `Done()` and `Err()` delegate to
+`c.Request.Context()`, and `net/http` cancels a request's context when `ServeHTTP` returns
+(chapter 1). The goroutine runs after the handler returns, so its context is already cancelled and
+every call it makes fails at once (measured: `work(c.Copy(), 10ms)` returned `context canceled`).
+This is gin issue #3166, the reason the flag defaults to off. The goroutine should copy the values
+it needs and use a context that keeps the request's values, drops its cancellation and has a bound
+of its own: `context.WithTimeout(context.WithoutCancel(c.Request.Context()), 5*time.Second)`.
+`WithoutCancel` "is not canceled when parent is canceled", and keeps values such as a trace id.
+Track the goroutine too, so shutdown waits for it (chapter 3, "Graceful shutdown").
+
+---
+
 ## Things to try
 
 - Reproduce file 02's measurement: a local server, 200 requests through a shared Transport,
@@ -473,6 +555,11 @@ called it. Put `defer wg.Done()` at the top of the per-task function so it runs 
   print which result lands at index 0. Then rewrite it to write `results[i]` and compare.
 - Pin a transitive dependency with a version-less `replace`, require a newer version from
   another module, and read `go list -m` for it.
+- Register `GET /items/{id}` and `DELETE /items/{id}` on a `ServeMux`, send a `POST`, and read
+  the `Allow` header. Then copy the program into a module whose `go.mod` says `go 1.21` and run
+  it again.
+- In a gin handler, pass `c` to a function that waits on `ctx.Done()`, cancel the client after
+  100 ms, and time how long the function runs. Then set `ContextWithFallback = true` and compare.
 
 ## Questions worth asking me
 
@@ -484,3 +571,5 @@ called it. Put `defer wg.Done()` at the top of the per-task function so it runs 
 - "Which other OS files does a `scratch` image need for this binary?"
 - "Here's our worker pool helper. What does a caller learn when half the tasks fail?"
 - "Here's our `go.mod`. Which `replace` lines are still doing anything?"
+- "Here's our gin setup. Where do we pass `c` as a context, and where does a goroutine keep `c`?"
+- "Would moving this service from gin to chi or `ServeMux` be worth it? What would change?"

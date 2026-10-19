@@ -3,8 +3,8 @@
 A course on the parts of a Go HTTP service that look finished in development and fail
 slowly in production: the HTTP client's connection pool, what the server's timeouts
 really bound, how deadlines and retries interact, copies that aren't copies, time zones
-in minimal images, worker pools that mislabel or drop results, and dependency bumps that
-change your toolchain or quietly pin an old version.
+in minimal images, worker pools that mislabel or drop results, a router or framework chosen by
+habit, and dependency bumps that change your toolchain or quietly pin an old version.
 
 **This is reference learning material.** Everything here is general Go, checked against
 the standard library source and documentation for Go 1.26. Where behaviour matters and
@@ -18,7 +18,7 @@ I wrote this as a teacher, not as a peer. That means:
 - I explain things you might already know. Skim if so.
 - Why before how: the failure comes before the fix.
 - Every chapter ends with **Check yourself** questions. Answers are in
-  [10-exercises.md](10-exercises.md).
+  [11-exercises.md](11-exercises.md).
 - Measurements are labelled as measurements, and computed figures as computed.
 
 ## The one thing to understand first
@@ -39,6 +39,7 @@ running it, rather than what its name suggests.
 |---|---|
 | [`net/http` Transport](https://pkg.go.dev/net/http#Transport) | Reuse, `DefaultTransport`'s settings, idle limits, `ForceAttemptHTTP2` |
 | [`net/http` Server](https://pkg.go.dev/net/http#Server) | What each timeout bounds, `Shutdown`, `TimeoutHandler` |
+| [`net/http` ServeMux](https://pkg.go.dev/net/http#ServeMux) / [Routing Enhancements for Go 1.22](https://go.dev/blog/routing-enhancements) | Method and wildcard patterns, precedence and conflicts, 405s, trailing-slash redirects, `httpmuxgo121` |
 | [`context`](https://pkg.go.dev/context) | Cancellation, deadlines, `WithoutCancel` (Go 1.21) |
 | [`time.LoadLocation`](https://pkg.go.dev/time#LoadLocation) and [`time/tzdata`](https://pkg.go.dev/time/tzdata) | Where zone data comes from, and embedding it |
 | [IANA tz database](https://github.com/eggert/tz) | Whether a zone has daylight saving |
@@ -50,6 +51,9 @@ running it, rather than what its name suggests.
 | [Go modules reference](https://go.dev/ref/mod) | What a version-less `replace` replaces; `-mod=readonly` |
 | [govulncheck tutorial](https://go.dev/doc/tutorial/govulncheck) | Reachability: imported but not called |
 | [POSIX crontab](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/crontab.html) | Day-of-month OR day-of-week; weekday range |
+| [gin](https://github.com/gin-gonic/gin) and its [docs](https://github.com/gin-gonic/gin/blob/v1.12.0/docs/doc.md) | gin's handler type, binding, groups, `c.Next` and `c.Abort`, pooled contexts, `ContextWithFallback` |
+| [chi](https://github.com/go-chi/chi) | An `http.Handler`-compatible router with groups and `Mount` |
+| [Alex Edwards](https://www.alexedwards.net/blog/which-go-router-should-i-use), [Eli Bendersky](https://eli.thegreenplace.net/2023/better-http-server-routing-in-go-122/) and [Jon Calhoun](https://calhoun.io/go-servemux-vs-chi) on routers | Three practitioners on choosing between `ServeMux`, third-party routers and frameworks |
 
 ## Reading order
 
@@ -66,6 +70,7 @@ running it, rather than what its name suggests.
 | 2 | [The HTTP client](02-the-http-client.md) | ⭐ Spot a per-request Transport, and build a client that pools, times out and proxies correctly |
 | 3 | [The HTTP server](03-the-http-server.md) | Say what each server timeout bounds, put a real deadline on handler work, shut down without dropping requests, and keep dependencies out of liveness probes |
 | 4 | [Deadlines and retries](04-deadlines-and-retries.md) | ⭐ Make a retry budget fit inside a request's deadline, and retry only what can succeed |
+| 10 | [Routing and frameworks](10-routing-and-frameworks.md) | Route with Go 1.22 `ServeMux` patterns, spot a gin handler whose `c` ignores cancellation or outlives its request, and choose between `ServeMux`, chi and gin on features rather than speed. Read after 3 and 4 |
 | 5 | [Fanning out](05-fanning-out.md) | Replace a hand-counted WaitGroup fan-out with `errgroup`, and bound its concurrency |
 | 9 | [Worker pools](09-worker-pools.md) | Pair batch results with their inputs by key, make a pool report partial failure, and size deadlines for queued work. Read after 5 |
 
@@ -81,12 +86,13 @@ running it, rather than what its name suggests.
 
 | # | File | |
 |---|------|---|
-| 10 | [Exercises & answers](10-exercises.md) | Worked answers, things to try, and questions to ask |
+| 11 | [Exercises & answers](11-exercises.md) | Worked answers, things to try, and questions to ask |
 
 Read chapter 1 first. Then read 2 → 3 → 4 in order: chapter 4 builds on the context discussion
 in 2 and the server timeouts in 3. Chapter 5 needs chapter 1's channel rules. Chapter 9 was
 added later and takes the next number, but belongs straight after 5, which it builds on, so it's
-listed there. Chapters 6, 7 and 8 are independent of each other and of Part 1. Not yet written, and belonging here: structured
+listed there. Chapter 10 was added later too. It builds on 3's handler contexts and adds a third
+break to 4's chain, so it's listed after 4. Chapters 6, 7 and 8 are independent of each other and of Part 1. Not yet written, and belonging here: structured
 logging and what not to log, metrics and cardinality, database connection pools, and profiling
 with `pprof`.
 
@@ -100,6 +106,9 @@ with `pprof`.
   two small bugs after "Backoff".
 - **Requests to a fan-out endpoint hang until timeout:** chapter 5.
 - **Batch results are attached to the wrong records, or failures vanish:** chapter 9.
+- **Choosing a router or framework for a new service:** chapter 10, "How to choose".
+- **Queries in a gin service keep running after clients give up:** chapter 10's warning on `c` as
+  a `context.Context`.
 - **Dates are off by one in production only:** chapter 7.
 - **A security bump broke the Docker build, or you're pinning a CVE fix:** chapter 8.
 
@@ -142,7 +151,14 @@ every minute. Worker pools that append results under a mutex return them in comp
 so pairing `results[i]` with `inputs[i]` mislabels data; write to `results[i]` or carry the
 key. A pool that logs an error and returns `nil` makes its caller commit failures, and one
 deadline shared by queued work fails healthy tasks that waited too long, because a child
-context can never outlive its parent.
+context can never outlive its parent. Since Go 1.22 `http.ServeMux` matches methods and path
+wildcards, lets the most specific pattern win, panics at registration when two patterns overlap
+and neither is more specific, and answers a wrong method with 405 and `Allow`. A module whose `go`
+line predates 1.22 gets the old mux, which answers 404 to every method pattern. gin adds binding, validation and groups, at the price of its
+own handler type and 19 compiled-in modules. Its `*gin.Context` is pooled, so a goroutine that keeps
+it reads a later request's data (490 of 500 did, measured), and as a `context.Context` it ignores
+the request's cancellation and deadline unless `ContextWithFallback` is set. Routing costs tens to
+hundreds of nanoseconds, under 1% of a loopback request, so choose a router for its features.
 
 ## How to use me
 
@@ -154,3 +170,4 @@ Ask me things like:
 - "Does this function mutate its input? Show me how the caller could be affected."
 - "What does this binary need from the OS that a `scratch` image won't have?"
 - "We're bumping this dependency. What else in the repo has to move with it?"
+- "We're starting a new service. `ServeMux`, chi or gin, and which defaults would we change?"
