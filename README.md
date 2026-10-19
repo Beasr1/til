@@ -27,7 +27,7 @@ Stage 1 · CS foundations ... interview/01 ──► cs-fundamentals
                                          └──► dsa
   │
   ▼
-Stage 2 · backend .......... http ──► go-services
+Stage 2 · backend .......... http ──► go-services ──► api-orchestration
                              postgres ──┬──► clickhouse
                              kafka ─────┘
                              vector-search, schema-evolution   (any time)
@@ -69,6 +69,7 @@ flowchart LR
 
     subgraph S2["Stage 2 · backend in production"]
         http[http] -.-> go[go-services]
+        go --> ao[api-orchestration]
         pg[postgres] --> ch[clickhouse]
         kafka[kafka] --> ch
         vs[vector-search]
@@ -139,7 +140,7 @@ flowchart LR
 |---|---|---|---|
 | **0 — Tools** | [git](git/README.md), [docker](docker/README.md) | The two tools under all other work. Rewriting history safely; the build cache | Any order. Read early; both are short |
 | **1 — CS foundations** | [interview/01](interview/01-how-the-loop-works.md), [cs-fundamentals](interview/cs-fundamentals/README.md), [dsa](interview/dsa/README.md) | What happens under your code (process, memory, transactions, TCP), and algorithms by pattern | `interview/01` first. Then cs-fundamentals and dsa in either order, or together |
-| **2 — Backend in production** | [http](http/README.md), [go-services](go-services/README.md), [postgres](postgres/README.md), [kafka](kafka/README.md), [clickhouse](clickhouse/README.md), [vector-search](vector-search/README.md), [schema-evolution](schema-evolution/README.md) | How the pieces of a real service fail, one at a time | http → go-services → postgres → kafka → clickhouse (needs postgres/10 and kafka/03). vector-search and schema-evolution any time |
+| **2 — Backend in production** | [http](http/README.md), [go-services](go-services/README.md), [api-orchestration](api-orchestration/README.md), [postgres](postgres/README.md), [kafka](kafka/README.md), [clickhouse](clickhouse/README.md), [vector-search](vector-search/README.md), [schema-evolution](schema-evolution/README.md) | How the pieces of a real service fail, one at a time | http → go-services → postgres → kafka → clickhouse (needs postgres/10 and kafka/03). api-orchestration after go-services (needs its files 01, 02, 04 and 05). vector-search and schema-evolution any time |
 | **3 — Putting it together** | [system-design](interview/system-design/README.md) | Designing a whole system and defending it. Links back into stage 2 for depth | After stage 1. Stage 2 makes it far richer but isn't required |
 | **Web** | [css](css/README.md), [static-sites](static-sites/README.md) | Building and shipping front ends | Independent of each other. static-sites assumes general HTTP/TLS; http/01 and 05 cover it |
 | **Trust and hardware** | [signatures](signatures/README.md), [smartcards](smartcards/README.md), [firmware-update](firmware-update/README.md), [android](android/README.md) | What "signed" and "verified" actually prove, and how devices take, run and attest code | signatures first gives the vocabulary (integrity vs authenticity) the others lean on. android stands alone otherwise |
@@ -159,6 +160,8 @@ flowchart LR
   course opens with a foundations chapter, so you won't land mid-story.
 - **Building a live, networked app.** cs-fundamentals → http/01 and http/04 → rust →
   peer-to-peer → realtime-audio.
+- **Building a workflow or integration platform.** http → go-services (01, 02, 04 and 05
+  at least) → api-orchestration.
 - **A side track for its own sake.** Each side track stands alone. Start with its first
   course in the table above.
 
@@ -169,6 +172,7 @@ flowchart LR
 | Course | One line | Start at |
 |---|---|---|
 | [android](android/README.md) | How an Android app is isolated, signed, booted and attested, and how each defence is attacked | `01-the-android-platform` |
+| [api-orchestration](api-orchestration/README.md) | Engines that chain API calls: graphs, data between steps, retries, SSRF, API contracts, and agents that build workflows | `01-foundations` |
 | [clickhouse](clickhouse/README.md) | What ClickHouse does with the rows an application sends it | `01-what-clickhouse-does-with-a-table` |
 | [css](css/README.md) | Stateful, animated UI with little or no JavaScript | `01-foundations` |
 | [docker](docker/README.md) | The build cache, and how it ships broken images silently | `01-images-and-layers` |
