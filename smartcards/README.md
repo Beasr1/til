@@ -34,6 +34,15 @@ is which.
 | **RFC 6960** | OCSP: the request's CertID, who may sign a response, what a client must check before accepting one. Cited in chapter 7 |
 | **ITU-T X.690** | ASN.1 encoding rules — BER, and DER as its one-encoding-per-value subset (§8.2, §11.1). Cited in chapter 7 |
 
+Platform documentation — not standards, but the primary source for what each platform does.
+Cited in chapter 6:
+
+| Source | Covers |
+|---|---|
+| **Microsoft Win32 smart card API** — `ISCardISO7816::GetChallenge`, `SCardReconnect`, `SCardBeginTransaction` | How long a challenge is valid, what a reconnect does to the card, and when Windows resets an idle card |
+| **Java Card API** (Oracle) — `JCSystem` | Transient memory: what a reset, power-on or deselection clears |
+| **Android `NfcAdapter`** — `EXTRA_READER_PRESENCE_CHECK_DELAY` | That a platform presence-checks discovered contactless tags, at an interval the app can set |
+
 ISO standards are paywalled. The 7816-4 command set and status words are widely mirrored;
 GlobalPlatform publishes its specifications free at <https://globalplatform.org/specs-library/>.
 ICAO Doc 9303 is free from <https://www.icao.int> and BSI TR-03110 from
@@ -51,7 +60,7 @@ Read 1–4 in order. They build.
 | 3 | [APDUs and status words](03-apdus-and-status-words.md) | Write any command by hand and interpret what comes back |
 | 4 | [T=0 and T=1](04-transmission-protocols.md) | Explain why the same command works on one card and appears to fail on another |
 | 5 | [How cards are organised](05-how-cards-are-organised.md) | Navigate a card's files, or recognise that it hasn't got any |
-| 6 | [Proving a card is genuine](06-proving-genuineness.md) | Explain what a clone can and cannot fake, which direction of a handshake proves it, why one scheme can need two different mechanisms, and which credential actually gates which — worked through two real national eID schemes |
+| 6 | [Proving a card is genuine](06-proving-genuineness.md) | Explain what a clone can and cannot fake, which direction of a handshake proves it, why one scheme can need two different mechanisms, and which credential actually gates which — worked through two real national eID schemes. Also why a handshake that passes over contact, or in tests, can fail over contactless once its key service is remote |
 | 7 | [Verifying the card's certificate](07-verifying-the-card-certificate.md) | Say exactly what "chains to a trust anchor" checks, find the right CA when an issuer has several, explain why one library refuses a certificate another accepts, read an OCSP answer for what it does and doesn't prove, and say which certificates in a chain a revocation check actually covered |
 
 Chapter 7 is X.509 in anger. If you want the layer *underneath* it — what an issuer CA is,
@@ -74,6 +83,7 @@ Reference, not reading:
 | To understand card security claims | 6, then 2 §what the ATR doesn't tell you |
 | To read someone's APDU trace | 3, then 5 |
 | To work out which credential a card is asking you for | 6 §which credential gates which mechanism, then 6 §two national eID schemes |
+| To debug mutual auth that passes on contact, or in tests, and fails contactless | 6 §the challenge has a lifetime, then 3 §status words |
 | To verify a card's certificate, or work out why verification fails | 6 §the trap that catches all three, then 7 |
 | The whole model in twenty minutes | 1, then the summary below |
 
@@ -95,7 +105,10 @@ Finally, because anything readable can be copied, genuineness can only be establ
 making the card **prove possession of a secret**: symmetrically, through a challenge and a
 diversified key an HSM re-derives, or asymmetrically, by having the card sign a challenge
 you chose. Both are only meaningful if the certificate involved chains to a trust anchor
-you obtained somewhere other than from the card. And the credential that unlocks any of
+you obtained somewhere other than from the card. The symmetric flow also runs against a
+clock: the card holds its challenge only so long, and the round trip to the HSM has to fit
+inside that — which over contactless can be shorter than one trip across a network. And the
+credential that unlocks any of
 this is set by **what the key's output claims**, not by the algorithm: a key proving the
 chip is genuine is gated on holding the card — often a number printed on its face — while
 a key signing on the holder's behalf is gated on the holder's PIN. Checking the card's
@@ -119,4 +132,6 @@ These notes are a starting point. Good questions to bring back:
 - "Which of these status words costs me something if I retry?"
 - "This card wants a credential — which kind, and where would a holder get it?"
 - "Compare how two schemes I name solve the same genuineness problem."
+- "My handshake passes on contact and fails contactless with `69 85` — card, reader, or
+  network?"
 - "This card's certificate fails verification — is it the card, the CA list, or the encoding?"

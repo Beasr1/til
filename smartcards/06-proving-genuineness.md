@@ -292,6 +292,146 @@ command; it is simply not that card's key.
 > that a wrong guess charges you for — runs last, once, and only when everything before it
 > has removed the ambiguity it can.
 
+## The challenge has a lifetime — and a remote key service spends it
+
+Look again at the symmetric flow. Between `GET CHALLENGE` and `EXTERNAL AUTHENTICATE` the
+terminal is holding the card's challenge while it goes off to the key service and back. In a
+test setup where that service runs on the same machine, the gap is microseconds and nobody
+notices it. Deployed, it is a network round trip — and a card can stop holding its challenge
+before the answer comes back. The handshake then fails on a card that is perfectly genuine,
+and only on some links.
+
+### Why a challenge is perishable
+
+Think of the challenge as something the card writes on a whiteboard rather than in a ledger.
+It exists to be used once and wiped, so the card keeps it somewhere wiping is free.
+
+ISO/IEC 7816-4 defines `GET CHALLENGE` as issuing a challenge for use in a security-related
+procedure. How long that challenge lasts is the subtle part. Microsoft's description of the
+command in its smart card API says only that **"the challenge is valid at least for the next
+command"** ([`ISCardISO7816::GetChallenge`](https://learn.microsoft.com/en-us/windows/win32/secauthn/iscardiso7816-getchallenge)).
+I haven't been able to check the ISO text itself on this point, so read that as one vendor's
+statement of the rule rather than the standard's wording. Notice what it is about: *which*
+command comes next, not how much time passes before it does. Nothing here promises the card
+will wait.
+
+Where the challenge lives makes it fragile. On a Java Card, short-lived applet state goes in
+**transient memory**: arrays the runtime clears to zero on card reset or power-on, or, for the
+`CLEAR_ON_DESELECT` kind, also when the application is deselected
+([`JCSystem`](https://docs.oracle.com/en/java/javacard/3.1/jc_api_srvc/api_classic/javacard/framework/JCSystem.html)).
+Whether a particular applet keeps its challenge there is the applet's business, but it is the
+natural place. A value used once and then discarded has no reason to be written to persistent
+memory, which is slow to write and wears with use. That is reasoning, not a specification.
+
+So anything that resets the card or deselects its application destroys a pending challenge:
+
+| What can destroy it | Contact | Contactless |
+|---|---|---|
+| The host asking for a reset — a PC/SC reconnect with `SCARD_RESET_CARD` (warm) or `SCARD_UNPOWER_CARD` (cold) ([`SCardReconnect`](https://learn.microsoft.com/en-us/windows/win32/api/winscard/nf-winscard-scardreconnect)) | yes | yes |
+| The platform resetting an idle card — Windows resets a card when a transaction is held more than five seconds with no operation on it ([`SCardBeginTransaction`](https://learn.microsoft.com/en-us/windows/win32/api/winscard/nf-winscard-scardbegintransaction)) | yes | yes |
+| Another application's command, if the card is open in shared mode and you hold no transaction | yes | yes |
+| The card losing power | only if it is pulled out | whenever it leaves the field, even briefly |
+| The reader checking that an idle card is still there | — | a **presence check**: Android documents that the platform performs presence checks on any discovered tag, at an interval the app can set ([`EXTRA_READER_PRESENCE_CHECK_DELAY`](https://developer.android.com/reference/android/nfc/NfcAdapter#EXTRA_READER_PRESENCE_CHECK_DELAY)) |
+
+A contact card sits in a powered slot and nothing on that link routinely disturbs it between
+commands. A contactless card is powered by the reader's field, and the reader keeps asking
+whether it is still there. Whether a given presence check disturbs what the card is holding
+depends on how the reader does it, and I haven't found a standard that says.
+
+### What it looks like
+
+The failure has a recognisable shape:
+
+- Every step before the cryptogram succeeds: `SELECT`, security environment, `GET CHALLENGE`.
+- `EXTERNAL AUTHENTICATE` is refused, but not with "verification failed" (`63 00` or `63 CX`,
+  file 03 §status words). It's refused with a word that describes the card's **state**:
+  `69 85`, conditions of use not satisfied, the usual answer from an applet with no live
+  challenge; or a `6D`-class "instruction not supported", which is what you get once the
+  application is no longer selected at all.
+- The same card and the same code pass with a local key service, pass over contact, and fail
+  contactless with a remote one.
+
+> ⚠️ A lost challenge is not a failed authentication. `63 00` means the card checked your
+> cryptogram against its key and they disagreed, which is evidence about the key. `69 85` means
+> the card checked nothing. A terminal that turns every non-`9000` from `EXTERNAL
+> AUTHENTICATE` into "not genuine" will call genuine cards clones, and do it only over
+> contactless, where it's hardest to spot. This is the "which direction proves what"
+> question from earlier, failing the other way.
+
+### Finding out how long you've got
+
+Two measurements, kept apart because they measure different things:
+
+1. **The card's side.** With the key held locally, so there is no network in the picture, put
+   a deliberate pause between `GET CHALLENGE` and `EXTERNAL AUTHENTICATE` and widen it until
+   the card refuses. That is the challenge's lifetime for that card, on that reader, over that
+   interface. It belongs to the pairing, so measure each pairing you care about.
+2. **The network's side.** Time a request to the key service that does no work, on a
+   connection that's already open: time to first byte. That is the floor for anything you put
+   in the window. On a public network it's rarely just propagation time. Proxies, gateways and
+   traffic inspection in front of a service can take far longer than the packets do.
+
+If the floor plus the service's own work exceeds the lifetime, no change to your terminal
+code will fix it.
+
+For scale, and only for scale: one contactless card–reader pairing I measured survived a
+300 ms pause and refused at 500 ms, while the same card over its contact interface survived a
+full round trip to its key service. That is one pairing. No source I found says what any card
+or reader guarantees.
+
+### Spending less of it
+
+Everything that doesn't need the challenge goes **before** `GET CHALLENGE`: deriving the
+card's key, authorising the request, policy checks, opening and warming the connection. Only
+the computation over the challenge belongs in the window.
+
+```mermaid
+sequenceDiagram
+    participant T as terminal
+    participant C as card
+    participant H as key service
+    T->>H: derive this card's key, authorise (no challenge needed yet)
+    H-->>T: a handle to the prepared key — the key itself stays in the service
+    T->>C: GET CHALLENGE
+    C-->>T: 8 random bytes
+    rect rgb(255, 225, 220)
+    Note over T,H: the window — the only thing in it is the cryptogram
+    T->>H: cryptogram over the challenge, with the prepared key
+    H-->>T: host cryptogram
+    T->>C: EXTERNAL AUTHENTICATE
+    end
+```
+
+And nothing else touches the card inside the window. Don't reconnect: a reconnect may be a
+reset. Don't let another application in either, because in shared mode it can send its own
+commands unless you hold a transaction.
+
+When it still doesn't fit:
+
+| Option | What it costs |
+|---|---|
+| Shorten the path to the key service — closer, fewer hops in front of it | Infrastructure. Only helps where you control the network between terminal and service |
+| Change how the reader treats an idle card, where the reader or platform exposes a presence-check setting | Reader-specific. Android exposes one; many readers document nothing |
+| Use the contact interface | The holder has to insert the card rather than tap it |
+| Compute the cryptogram in the terminal | Removes the round trip by putting the card's key in the terminal, which is exactly what the key service exists to prevent. The master key in the HSM is the anchor (see the two flows above); a copy outside it isn't |
+
+Testing with the key holder on the same machine measures the protocol with its clock stopped.
+That holds well beyond cards: whenever one side's state is volatile and the other side's answer
+needs a network round trip, the round trip is part of whether the protocol works, not just how
+fast it runs.
+
+### What isn't settled
+
+- **Which component drops the state over contactless** — the reader's presence check, the
+  card's own power management, or something else. I found no standard that defines what a
+  reader must or must not do to an idle card, so this varies by reader and is seldom
+  documented. A reader vendor's support engineer reports presence checks colliding with tag
+  operations, with a longer interval as the fix
+  ([ST community forum](https://community.st.com/st25-nfc-rfid-tags-and-readers-54/what-is-the-difference-between-android-11-and-android-13-for-nfc-17310)).
+  That is a forum answer, not a specification.
+- **Whether ISO/IEC 7816-4 itself states** that a challenge lasts "at least for the next
+  command". The only text I could check is Microsoft's.
+
 ## Mechanism three: signed data objects
 
 Rather than authenticating the card, sign the *contents*. The issuer signs each data object
@@ -518,3 +658,18 @@ the left-hand column as though it were proof.
 13. A key-derivation service returns a 32-byte key for a card whose secure channel you
     believe is 3DES. What is almost certainly wrong — the diversifier, the cipher, or the
     service — and how does the key length alone tell you?
+14. A mutual authentication passes in your test suite, where the key service runs on the same
+    machine, and fails in the field: `SELECT`, security environment and `GET CHALLENGE` all
+    return `9000`, then `EXTERNAL AUTHENTICATE` returns `69 85`. What has the card told you,
+    what has it not told you, and what should the terminal report?
+15. The same card and the same code pass over contact and fail over contactless, but only
+    when the key service is remote. Design the two measurements that tell you whether any
+    change to the terminal code can fix it, and say which result means "no".
+16. To fit the window, a colleague proposes that the key service hand the terminal the
+    card's diversified key, so the cryptogram can be computed locally. What does this buy,
+    what does it cost, and why does the cost fall on the whole fleet's trust model rather than
+    on this one card?
+17. You've moved every challenge-independent step before `GET CHALLENGE`, and the handshake
+    still fails over contactless. Your process holds the card connection the whole time and
+    never reconnects. Name two things outside your process that could still be destroying
+    the challenge, and say what you'd need from whom to tell them apart.

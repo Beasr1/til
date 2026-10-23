@@ -504,6 +504,78 @@ and it may not exist at all, if the older scheme was dropped when the infrastruc
 AES. Key length is the cheapest possible tell that you are in this situation, long before any
 card touches a reader.
 
+**14. Passes in tests, `69 85` in the field.**
+
+The card has told you it **didn't check your cryptogram**. "Conditions of use not satisfied"
+describes the card's state at the moment the command arrived — here, almost certainly, that
+it no longer held a challenge to check against. Everything before it worked, so the
+choreography is right.
+
+What it has *not* told you is anything about the key. A key mismatch comes back as
+"verification failed", `63 00` (file 03 §status words). So the result is neither "genuine"
+nor "not genuine". The check never ran.
+
+The difference between the two environments is the clue. In the test suite the key service
+is on the same machine, so the gap between `GET CHALLENGE` and `EXTERNAL AUTHENTICATE` is
+effectively zero. In the field it holds a network round trip, and the challenge didn't
+survive it.
+
+The terminal should report **"could not complete the check"**, a different outcome from
+"authentication failed". Reporting it as a failure accuses a genuine card of being a clone,
+on exactly the links where the window is longest.
+
+**15. Contact passes, contactless fails, only with a remote key service.**
+
+Measure the two sides of the window separately:
+
+1. **The challenge's lifetime.** Hold the key locally so there's no network at all, insert a
+   deliberate pause between `GET CHALLENGE` and `EXTERNAL AUTHENTICATE`, and widen it until
+   the card refuses. Do it on the contactless interface, and on contact as a control. This is
+   the budget, for that card on that reader.
+2. **The floor of the round trip.** Time a request to the key service that does no work, on
+   an already-open connection: time to first byte. Add the service's own processing for the
+   cryptogram call. This is the spend.
+
+If the spend exceeds the budget, **no change to the terminal code can fix it**: it can only
+reorder work around the round trip, never remove the round trip. What remains is a shorter
+path to the service, a reader that treats idle cards differently, or the contact interface.
+
+If the spend is under the budget but the real handshake still fails, something else is in
+the window. Move every challenge-independent step before `GET CHALLENGE` and look again.
+
+**16. Handing the terminal the diversified key.**
+
+It buys the round trip back. The cryptogram is computed where the card is, so the window
+shrinks to the time between two APDUs.
+
+It costs the property the key service exists for. The card's key now exists outside the HSM,
+on a terminal you don't control, for as long as that terminal chooses to keep it. Anyone who
+can read it can complete the handshake for that card without the card, so a clone answering
+with a stolen key passes.
+
+Why the fleet? Diversification limits the damage from one card's key leaking to one card
+(question 2), and that is still true. What changes is the *channel*. A design that hands
+every terminal the key of every card it authenticates has made terminals a standing path out
+of the HSM for every key it serves. The master key is still the anchor, but it now has a
+leak built into normal operation. The cost is to the trust model, not to one card.
+
+**17. Still failing, with the connection held and never reconnected.**
+
+Inside your process the window is now as short as it can be, so look outside it:
+
+- **The reader.** A contactless reader periodically checks that an idle card is still in the
+  field. Depending on how it does that, the check may disturb the card's state. You need the
+  reader vendor to say what their presence check does and whether its interval can be
+  changed.
+- **Another process.** If the card is open in shared mode with no transaction held, another
+  application can send its own commands between yours, and an applet that keeps its challenge
+  only until the next command loses it to them. The operating system's own logs, or a
+  transaction held for the whole handshake, will tell you.
+
+The controlled experiment from question 15 separates them. If a local key holder with an
+artificial pause reproduces the failure while your process is the only client, it's the link
+or the card, not another process.
+
 ---
 
 ## Chapter 7 — Verifying the card's certificate
@@ -673,6 +745,14 @@ In rough order of risk. Everything in the first two groups is free.
     `openssl verify -partial_chain -CAfile ca.pem card.pem`, then with a strict library,
     and explain any difference.
 
+**Timing** — check first that a refused `EXTERNAL AUTHENTICATE` decrements nothing on your
+card
+
+11. With the key held locally, widen a pause between `GET CHALLENGE` and `EXTERNAL
+    AUTHENTICATE` until the card refuses — over contact, then over contactless. Note the
+    status word at the edge, and compare the contactless budget with one round trip to the
+    key service you'd use in production.
+
 ## Questions worth asking me
 
 - "Decode this ATR for me and tell me what I'll be speaking."
@@ -684,3 +764,5 @@ In rough order of risk. Everything in the first two groups is free.
 - "Here's a certificate one library accepts and another refuses — what's wrong with it?"
 - "Which of these CAs should this card chain to, and how would I prove it?"
 - "Walk me through what an OCSP answer does and doesn't tell me about this card."
+- "My handshake passes on contact and fails contactless — here are my timings. Will it ever
+  fit, and what would I have to move?"

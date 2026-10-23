@@ -32,6 +32,7 @@ Reference, not reading. Chapter references point at where the term is motivated.
 | **PC/SC** | The host-side reader API implemented by every OS (1) |
 | **Pseudo-APDU** | A command the *reader* answers, not the card. Absence proves nothing about the card (1) |
 | **ISO/IEC 14443** | The contactless interface standard. Contactless ATRs are synthesised from its ATS (2) |
+| **Presence check** | A contactless reader's periodic check that an idle card is still in the field. Method and interval vary by reader; some can disturb what the card is holding (6) |
 
 ## Organisation
 
@@ -59,6 +60,7 @@ Reference, not reading. Chapter references point at where the term is motivated.
 | **GlobalPlatform** | The specification for loading, selecting and managing applets on a card (5) |
 | **ISD** | Issuer Security Domain — the card manager applet. Implements card content management and little else (5) |
 | **JavaCard** | The runtime most GlobalPlatform cards use. Applets are firewalled from each other |
+| **Transient memory** | Applet state the Java Card runtime clears on reset, power-on, or (for `CLEAR_ON_DESELECT`) deselection. The natural home for a challenge, which is why a reset destroys one (6) |
 | **Card recognition data** | `GET DATA` tag `66` — OIDs naming the GlobalPlatform version and secure channel protocol (6) |
 | **CPLC** | Card Production Life Cycle data, `GET DATA` tag `9F7F` — fabricator, IC type, dates, IC serial number |
 | **Security domain** | An on-card entity holding keys on behalf of an issuer or application provider |
