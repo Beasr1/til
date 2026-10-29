@@ -536,9 +536,13 @@ Measure the two sides of the window separately:
    an already-open connection: time to first byte. Add the service's own processing for the
    cryptogram call. This is the spend.
 
-If the spend exceeds the budget, **no change to the terminal code can fix it**: it can only
-reorder work around the round trip, never remove the round trip. What remains is a shorter
-path to the service, a reader that treats idle cards differently, or the contact interface.
+If the spend exceeds the budget, **no reshuffling of work can fix it**: reordering moves work
+around the round trip, never removes the round trip. Before giving up on the terminal, run a
+third measurement: repeat the failing pause with a command the applet ignores sent every so
+often during it. If that passes, the state was lost to an idle link, not to time, and keeping
+the link busy fixes it for any round trip (question 18). If it doesn't, what remains is a
+shorter path to the service, a reader that treats idle cards differently, or the contact
+interface.
 
 If the spend is under the budget but the real handshake still fails, something else is in
 the window. Move every challenge-independent step before `GET CHALLENGE` and look again.
@@ -575,6 +579,55 @@ Inside your process the window is now as short as it can be, so look outside it:
 The controlled experiment from question 15 separates them. If a local key holder with an
 artificial pause reproduces the failure while your process is the only client, it's the link
 or the card, not another process.
+
+**18. A keep-alive turns the failure into a pass.**
+
+**What it tells you:** the state wasn't lost to elapsed time. If it were, extra commands
+couldn't save it. It was lost because nothing crossed the link for long enough. That rules
+out a card-side expiry on the challenge, and it rules out another application interleaving:
+your traffic made the link busier, not quieter. It also tells you something about this
+applet, that it doesn't consume or clear its challenge on a command it rejects. "Valid at
+least for the next command" allowed that, but didn't promise it.
+
+**What it doesn't tell you:** *who* acts on the idleness, the reader with a presence check or
+the card with its own power management. The fix is the same either way, but the question to a
+reader vendor is different. Changing one component at a time answers it. In the case behind
+chapter 6, a reader firmware update did (question 19).
+
+**Before shipping it:**
+
+- **The second window.** If a backend call also sits between `EXTERNAL AUTHENTICATE` and the
+  first secure-messaging command, the new session is volatile too. Test that a pause there
+  fails without the keep-alive and passes with it. It's possible that a plain command inside a
+  secure session aborts it on some card, which would make the keep-alive the fault.
+- **Every card generation and applet you support.** Tolerating the keep-alive is a property of
+  one applet. One that resets its challenge on any command breaks with the very traffic meant
+  to save it.
+- **Contactless only.** Class byte `FF` is invalid on a card, and contact didn't need help.
+- **Where the command actually goes.** If you picked it because "the reader answers it", check.
+  A reader that forwards it to the card changes which question you're asking the card.
+
+**19. The firmware update fixed it. Remove the keep-alive?**
+
+**Not yet.** The update fixed the readers that got it. The decision is about the readers that
+didn't: a fleet runs whatever firmware each device shipped with until someone updates it. On
+old firmware the keep-alive is the only thing that saves the handshake. On new firmware it
+costs one command the reader answers itself. So it stays until you know the old firmware is
+gone, from device telemetry or an update path that reaches every reader.
+
+**What the update changed:** under the new firmware the keep-alive never reaches the card.
+The reader answers `FF CA` itself, `90 00` with the UID, as a pseudo-APDU should. Two
+consequences:
+
+- It no longer tests whether the applet tolerates a stray command. That still matters on old
+  firmware, where the command does reach the card.
+- A keep-alive that stays inside the reader only helps if the reader's own idle timer is what
+  needs resetting. A different reader that answered it locally *and* disturbed idle cards would
+  defeat it. Before trusting it on another reader, run the same pause with and without it.
+
+The lesson underneath: a workaround that works tells you the **trigger** (an idle link) and
+nothing about the **culprit**. Here the culprit turned out to be the reader, and fixing it
+there was the real fix. The workaround stays because the culprit isn't fixed everywhere yet.
 
 ---
 
@@ -751,7 +804,11 @@ card
 11. With the key held locally, widen a pause between `GET CHALLENGE` and `EXTERNAL
     AUTHENTICATE` until the card refuses — over contact, then over contactless. Note the
     status word at the edge, and compare the contactless budget with one round trip to the
-    key service you'd use in production.
+    key service you'd use in production, timed from where your users are rather than from
+    the office.
+12. Repeat the pause that failed, sending a command the applet rejects every 100 ms during
+    it. If it now passes, do the same between `EXTERNAL AUTHENTICATE` and the first
+    secure-messaging command, with and without the keep-alive.
 
 ## Questions worth asking me
 

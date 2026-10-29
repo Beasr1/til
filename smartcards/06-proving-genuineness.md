@@ -296,10 +296,10 @@ command; it is simply not that card's key.
 
 Look again at the symmetric flow. Between `GET CHALLENGE` and `EXTERNAL AUTHENTICATE` the
 terminal is holding the card's challenge while it goes off to the key service and back. In a
-test setup where that service runs on the same machine, the gap is microseconds and nobody
-notices it. Deployed, it is a network round trip — and a card can stop holding its challenge
-before the answer comes back. The handshake then fails on a card that is perfectly genuine,
-and only on some links.
+test setup where that service runs on the same machine, or sits one fast hop away on an office
+network, the gap is short and nobody notices it. Deployed, it is a network round trip — and a
+card can stop holding its challenge before the answer comes back. The handshake then fails on
+a card that is perfectly genuine, and only on some links.
 
 ### Why a challenge is perishable
 
@@ -360,7 +360,7 @@ The failure has a recognisable shape:
 
 ### Finding out how long you've got
 
-Two measurements, kept apart because they measure different things:
+Three measurements, kept apart because they measure different things:
 
 1. **The card's side.** With the key held locally, so there is no network in the picture, put
    a deliberate pause between `GET CHALLENGE` and `EXTERNAL AUTHENTICATE` and widen it until
@@ -369,15 +369,23 @@ Two measurements, kept apart because they measure different things:
 2. **The network's side.** Time a request to the key service that does no work, on a
    connection that's already open: time to first byte. That is the floor for anything you put
    in the window. On a public network it's rarely just propagation time. Proxies, gateways and
-   traffic inspection in front of a service can take far longer than the packets do.
+   traffic inspection in front of a service can take far longer than the packets do. And
+   measure from where your users are: an office on a direct link to the service is a test
+   setup too.
+3. **Idle, or elapsed?** Repeat the pause that failed, but this time send the card a command
+   every so often during it, one the applet will refuse without acting on. If the card now
+   survives, it was the **idle link** that cost you the state, not the passage of time. That
+   changes which fixes can work.
 
-If the floor plus the service's own work exceeds the lifetime, no change to your terminal
-code will fix it.
+If the floor plus the service's own work exceeds the lifetime, no reshuffling of work around
+the round trip will fix it. The one thing that still might is the third measurement's answer.
 
 For scale, and only for scale: one contactless card–reader pairing I measured survived a
 300 ms pause and refused at 500 ms, while the same card over its contact interface survived a
-full round trip to its key service. That is one pairing. No source I found says what any card
-or reader guarantees.
+full round trip to its key service. With a command on the link every 100 ms, the same
+contactless pairing held its challenge through 1.5 s. After the reader's firmware was updated,
+the same 500 ms pause passed with no traffic at all. That is one pairing. No source I found says
+what any card or reader guarantees.
 
 ### Spending less of it
 
@@ -402,33 +410,87 @@ sequenceDiagram
     end
 ```
 
-And nothing else touches the card inside the window. Don't reconnect: a reconnect may be a
-reset. Don't let another application in either, because in shared mode it can send its own
-commands unless you hold a transaction.
+And nothing you didn't choose touches the card inside the window. Don't reconnect: a
+reconnect may be a reset. Don't let another application in either, because in shared mode it
+can send its own commands unless you hold a transaction.
 
-When it still doesn't fit:
+### Or keep the link busy
+
+If the third measurement showed the state dying of idleness, there is a fix that doesn't care
+how long the round trip takes: don't let the link go idle. For the length of the wait, send
+the card a command every so often, one its applet will refuse without acting on.
+
+On the card behind this section, a command with class byte `FF` came back `6E 00`, "class not
+supported", every time. `FF` is an invalid class under ISO/IEC 7816-4:2013 (as cited in Java
+Card's [`APDUUtil`](https://docs.oracle.com/javacard/3.0.5/api/javacardx/apdu/util/APDUUtil.html)).
+The pending challenge survived four of these in a 500 ms wait and thirteen in 1.5 s. After
+`EXTERNAL AUTHENTICATE`, the freshly opened secure session survived them too: the next
+secure-messaging command succeeded, where the same wait without them failed with `69 82`.
+
+That fits "valid at least for the next command". *At least* is a floor, and this applet's
+ceiling was higher. Don't assume it of another applet. One that clears its challenge on any
+command would be broken by the very traffic meant to save it, so test each card.
+
+Two details from the same case:
+
+- **The command reached the card.** `FF CA 00 00 00` is widely implemented as a request the
+  *reader* answers itself, returning the card's UID: a PC/SC pseudo-APDU (file 01). I haven't
+  checked the PC/SC text on it. This reader, on its old firmware, passed it straight to the
+  card, which is why the card answered `6E 00`. The link stayed busy either way, but you can't assume a pseudo-APDU
+  stays in the reader.
+- **Contactless only.** A class byte of `FF` is invalid on a card, and contact didn't need the
+  help: the contact link held its state through the same waits unaided.
+
+### Then find which component it was
+
+The keep-alive proved *what* destroyed the state, an idle link, but not *who* acted on the
+idleness. Changing one component at a time answers that. In the case behind this section it
+was the reader. After a firmware update, a 500 ms idle pause passed with no keep-alive at all:
+the old firmware had been disturbing an idle card, and the new one leaves it alone. The card
+had done nothing wrong.
+
+The update changed something else too. The new firmware answered `FF CA 00 00 00` itself, `90 00`
+with the card's UID, the way the pseudo-APDU is meant to work, so under it the keep-alive no
+longer reached the card. That is harmless once idleness costs nothing. It does mean a
+keep-alive's reach depends on the reader's firmware as much as on the card. A reader that
+answered the keep-alive itself *and* disturbed idle cards would defeat it.
+
+Whether to keep the workaround once the cause is fixed is a question about the fleet, not the
+bench. Readers in the field run whatever firmware they shipped with until someone updates
+them. A keep-alive that costs nothing on new firmware and saves the handshake on old firmware
+is worth keeping until you know the old firmware is gone.
+
+When it still doesn't fit, or the card won't tolerate a keep-alive:
 
 | Option | What it costs |
 |---|---|
+| Keep the link busy during the wait (above) | Fixes any round-trip length, if the state dies of idleness. Card-specific: the command must be one the applet ignores, so test each card. Contactless only |
 | Shorten the path to the key service — closer, fewer hops in front of it | Infrastructure. Only helps where you control the network between terminal and service |
-| Change how the reader treats an idle card, where the reader or platform exposes a presence-check setting | Reader-specific. Android exposes one; many readers document nothing |
+| Change how the reader treats an idle card: update its firmware, or use a presence-check setting where one is exposed | In the case behind this section, a firmware update was the real fix. Reader-specific, and it reaches readers already in the field only as fast as they get updated. Android exposes a setting; many readers document nothing |
 | Use the contact interface | The holder has to insert the card rather than tap it |
 | Compute the cryptogram in the terminal | Removes the round trip by putting the card's key in the terminal, which is exactly what the key service exists to prevent. The master key in the HSM is the anchor (see the two flows above); a copy outside it isn't |
 
-Testing with the key holder on the same machine measures the protocol with its clock stopped.
-That holds well beyond cards: whenever one side's state is volatile and the other side's answer
-needs a network round trip, the round trip is part of whether the protocol works, not just how
-fast it runs.
+Testing with the key holder on the same machine measures the protocol with its clock stopped,
+and testing over a fast office link nearly does. The round trip that breaks it in the field may
+never appear on the network you develop on. That holds well beyond cards: whenever one side's
+state is volatile and the other side's answer needs a network round trip, the round trip is
+part of whether the protocol works, not just how fast it runs.
 
 ### What isn't settled
 
-- **Which component drops the state over contactless** — the reader's presence check, the
-  card's own power management, or something else. I found no standard that defines what a
-  reader must or must not do to an idle card, so this varies by reader and is seldom
-  documented. A reader vendor's support engineer reports presence checks colliding with tag
-  operations, with a longer interval as the fix
+- **What the old reader firmware actually did to the card.** The firmware update settles that
+  the reader was acting on the idleness. *How* it did, I can't see from outside. A presence
+  check that re-activates the card is the likely candidate, and a `6D`-class answer after the
+  wait fits an application that had been deselected, but that is inference. I found no
+  standard that defines what a reader must or must not do to an idle card, so this varies by
+  reader and is seldom documented. A reader vendor's support engineer reports presence checks
+  colliding with tag operations, with a longer interval as the fix
   ([ST community forum](https://community.st.com/st25-nfc-rfid-tags-and-readers-54/what-is-the-difference-between-android-11-and-android-13-for-nfc-17310)).
   That is a forum answer, not a specification.
+- **Whether the new firmware fixes it for any wait, or only raised the limit.** Tested at
+  500 ms.
+- **Whether other applets tolerate a keep-alive.** One card has been seen to. A different
+  applet may clear its challenge on any command.
 - **Whether ISO/IEC 7816-4 itself states** that a challenge lasts "at least for the next
   command". The only text I could check is Microsoft's.
 
@@ -673,3 +735,11 @@ the left-hand column as though it were proof.
     still fails over contactless. Your process holds the card connection the whole time and
     never reconnects. Name two things outside your process that could still be destroying
     the challenge, and say what you'd need from whom to tell them apart.
+18. A 500 ms pause between `GET CHALLENGE` and `EXTERNAL AUTHENTICATE` fails over
+    contactless, and the same pause passes when a command the applet rejects is sent every
+    100 ms during it. What has that told you about the cause, what has it ruled out, what has
+    it not told you, and what must you check before shipping the keep-alive as the fix?
+19. The keep-alive ships. Later, a reader firmware update makes the handshake pass without it,
+    and the reader now answers your keep-alive itself instead of passing it to the card. Do you
+    remove the keep-alive? What decides, and what has the update changed about what the
+    keep-alive actually does?

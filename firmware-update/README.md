@@ -6,14 +6,15 @@ not promise you along the way.
 
 **This is reference learning material.** It is about the standards — USB DFU 1.1, one
 silicon vendor's DfuSe extension, USB CDC, Microsoft's OS descriptors and driver signing
-policy — not about any particular device or product. Nothing here is project-specific.
+policy, and how a Windows driver package is built, signed and installed — not about any
+particular device or product. Nothing here is project-specific.
 
 I wrote this as a teacher, not as a peer. That means:
 
 - I explain things you might already know. Skim if so.
 - *Why* before *how*: each chapter opens with the problem that made the design necessary.
 - Every file ends with **Check yourself** questions. Answers are in
-  [`09-exercises.md`](09-exercises.md).
+  [`10-exercises.md`](10-exercises.md).
 - Where a measurement appears, it is labelled as one observed device. None of them are
   specification figures.
 
@@ -32,6 +33,10 @@ is which.
 | **USB CDC and its PSTN subclass** (USB-IF) | The virtual serial port a device commonly uses to receive a vendor reboot command. Chapter 2 |
 | **Microsoft OS Descriptors for USB Devices**, **Microsoft OS 1.0 Descriptors Specification**, **WinUSB Device** — [Microsoft Learn](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/microsoft-defined-usb-descriptors) | String index `0xEE`, `bMS_VendorCode`, the `WINUSB` compatible ID, the `osvc` cache. Chapter 7 |
 | **Driver Signing Policy** — [Microsoft Learn](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/kernel-mode-code-signing-policy--windows-vista-and-later-) | The Windows 10 1607 rule, EV certificates, attestation signing, and the three documented exceptions. Chapter 7 |
+| **INF Version / Manufacturer sections, DriverVer, Standard USB Identifiers, WinUSB Installation** — [Microsoft Learn](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/inf-version-section) | INF anatomy: `CatalogFile`, `DriverVer`, TargetOSVersion decorations, USB hardware ids, the reference WinUSB INF. Chapter 8 |
+| **Catalog Files and Digital Signatures**, **Driver Store** — [Microsoft Learn](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/catalog-files) | What a catalog covers, what invalidates it, staging and its integrity checks. Chapter 8 |
+| **Inf2Cat**, **MakeCat**, **SignTool**, **PnPUtil** — [Microsoft Learn](https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/inf2cat) | The tools: switches, which kit ships each, the documented sign and verify command lines. Chapter 8 |
+| **Time Stamping Authenticode Signatures**, **Trusted Publishers Certificate Store** — [Microsoft Learn](https://learn.microsoft.com/en-us/windows/win32/seccrypto/time-stamping-authenticode-signatures) | Why a timestamp outlives the certificate; what Trusted Publishers trusts, and Microsoft's "internal systems only" guidance. Chapter 8 |
 
 DFU 1.1 is free from usb.org. ST's application notes are free from st.com. Microsoft's
 pages are public. The one source I could not obtain directly is **UM0424**, so chapter 4's
@@ -43,7 +48,8 @@ whether a particular part behaves identically is a question for its own referenc
 ## Reading order
 
 Read 1–3 in order. They build. Chapters 4–7 can be taken in any order after that, though
-5 reads better after 4.
+5 reads better after 4. Chapter 8 assumes 7: it takes apart the driver package that chapter 7
+decides you need.
 
 | # | File | After this you can… |
 |---|---|---|
@@ -54,13 +60,14 @@ Read 1–3 in order. They build. Chapters 4–7 can be taken in any order after 
 | 5 | [One program region, or two](05-single-bank-and-dual-bank.md) | Design an update that survives a power cut on hardware that has nowhere to stage anything — and say exactly what that costs |
 | 6 | [Integrity is not authenticity](06-integrity-is-not-authenticity.md) | State precisely what a checksum proves, where the trust boundary really sits, and what you would have to add to move it |
 | 7 | [The Windows driver problem](07-the-windows-driver-problem.md) | Explain why a device that works on Linux is unreachable on Windows, price the ways out, and separate what the signing policy actually governs from what people think it does |
+| 8 | [Inside a driver package](08-inside-a-driver-package.md) | Read an INF section by section, say what a catalog covers and what invalidates it, build and sign one with Inf2Cat and SignTool, and tell staging from binding when an install "succeeds" and nothing happens |
 
 Reference, not reading:
 
 | # | File | |
 |---|---|---|
-| 8 | [Glossary](08-glossary.md) | Every term, request, state and status code, in one place |
-| 9 | [Exercises](09-exercises.md) | Worked answers to every **Check yourself**, plus things to try |
+| 9 | [Glossary](09-glossary.md) | Every term, request, state and status code, in one place |
+| 10 | [Exercises](10-exercises.md) | Worked answers to every **Check yourself**, plus things to try |
 
 ### If you're short on time
 
@@ -70,6 +77,7 @@ Reference, not reading:
 | To debug an update that hangs or reports nonsense | 3, then 4 §nothing happens until you ask for status |
 | To answer "is this update secure?" in a review | 6, then the last two rows of its trust-boundary table |
 | To work out why it works on your bench and not on a customer's Windows machine | 7, then 2 §what do you hold on to |
+| To build, sign and install a Windows driver package, or find out why one won't | 7 §driver signing is not code signing, then 8 |
 | The whole model in twenty minutes | 1, then the summary below |
 
 ## The one-paragraph summary of everything
@@ -102,7 +110,13 @@ of whoever can call the updater. On Windows, add one more obstacle: the DFU inte
 vendor-class, there is no in-box driver, and either the firmware asks for WinUSB through
 the **`0xEE` Microsoft OS descriptor** — free, silent, and cached forever including the
 failures — or you ship a **driver package**, which needs Microsoft's signature, an EV
-certificate to get an account, and a submission per revision.
+certificate to get an account, and a submission per revision. That package is an **INF** (the
+rules: which hardware id binds which driver) plus a **catalog** (a signed list of hashes of
+every file the INF references). The catalog is a build product: **Inf2Cat**, from the WDK
+rather than the SDK, validates the INF and generates it; **SignTool** signs and timestamps it;
+and any byte changed in the INF afterwards invalidates it. Windows checks it at **staging**,
+when the package enters the driver store, which is a separate event from a device actually
+being bound.
 
 ## How to use me
 
@@ -115,5 +129,7 @@ These notes are a starting point. Good questions to bring back:
 - "What does this container's checksum actually prove, and what would make it prove more?"
 - "This has to work on Windows machines we don't administer — what are my options, in
   order of cost?"
+- "Here's an INF — walk me through which device it binds, on which Windows, and what it
+  installs."
 - "Which of these timeouts should be a constant, and which should come from the device?"
 - "Where is the commit point in this design, and what does cancel mean on each side of it?"

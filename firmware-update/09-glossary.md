@@ -1,4 +1,4 @@
-# 8. Glossary
+# 9. Glossary
 
 Reference, not reading. Chapter references point at where the term is motivated.
 
@@ -98,10 +98,37 @@ Reference, not reading. Chapter references point at where the term is motivated.
 | **Extended compat ID** | The OS feature descriptor whose `compatibleID` field says `WINUSB` (7) |
 | **Extended properties** | The OS feature descriptor carrying `DeviceInterfaceGUID` and WinUSB power settings (7) |
 | **`osvc`** | Registry value under `UsbFlags\<vvvvpppprrrrr>` caching whether a device answered the `0xEE` probe. A failure is cached too (7) |
-| **Driver package** | An INF plus a catalog plus binaries, installed into the driver store and matched against hardware ids (7) |
-| **Catalog (`.cat`)** | The file the package's signature covers (7) |
+| **Driver package** | An INF plus a catalog plus binaries, installed into the driver store and matched against hardware ids (7, 8) |
+| **Catalog (`.cat`)** | A signed list of hashes, one per file the INF references; the package's signature. A build product of the INF (7, 8) |
 | **Attestation signing** | Submitting a driver to Microsoft's portal without Hardware Lab Kit logs; documented for Windows 10 client (7) |
 | **Cross-signing** | The pre-1607 model, where a vendor certificate chained to a Microsoft cross-certificate. Now only accepted in the documented exception cases (7) |
+
+## Windows driver packages
+
+| Term | Meaning |
+|---|---|
+| **INF** | The text file of a driver package: which hardware id binds which driver, and what installing does (8) |
+| **`[Version]` section** | First section of every INF: `Signature`, `Class` / `ClassGUID`, `Provider`, `CatalogFile`, `DriverVer`, `PnpLockdown` (8) |
+| **`CatalogFile`** | The `[Version]` entry naming the package's `.cat`. Without one, the package is treated as unsigned (8) |
+| **`DriverVer`** | `mm/dd/yyyy,w.x.y.z`. Required. A more recent date wins when Windows chooses between packages (8) |
+| **Models section** | The per-manufacturer device list: display name, install section, hardware id. One copy per TargetOSVersion decoration (8) |
+| **TargetOSVersion decoration** | A suffix like `NTamd64.10.0` that picks a Models section by architecture and Windows version. Must match a section name exactly (8) |
+| **DDInstall section** | The install section a Models line points at, with its `.Services` and `.HW` companions (8) |
+| **`Include` / `Needs`** | Run a named section of another INF. How a WinUSB INF borrows `winusb.inf` and ships no code (8) |
+| **Hardware id** | `USB\VID_xxxx&PID_xxxx[&REV_xxxx]`, built by the hub driver from the device descriptor. What a Models line matches (8) |
+| **Compatible id** | The class-code fallbacks, `USB\CLASS_xx&SUBCLASS_xx&PROT_xx` and shorter (8) |
+| **Thumbprint** | Microsoft's word for the per-file hash inside a catalog (8) |
+| **Embedded signature** | An Authenticode signature inside a PE file. A boot-start driver needs one as well as the catalog (8) |
+| **Inf2Cat** | WDK tool that validates an INF for a list of Windows versions and generates its unsigned catalog. Not in the SDK (8) |
+| **MakeCat / `.cdf`** | SDK tool that builds a catalog from a hand-written definition file. Microsoft: only for files not installed by an INF (8) |
+| **SignTool** | SDK tool that signs, timestamps and verifies files, catalogs included. Its default digest is SHA-1, so pass `/fd SHA256` (8) |
+| **Countersignature (timestamp)** | A timestamp authority's signature over your signature, recording when it was made. Keeps the signature valid after the certificate expires (8) |
+| **Driver store** | The trusted local collection of packages. Only a package in it can be installed on a device (8) |
+| **Staging** | Copying a package into the driver store after its catalog and syntax are checked. A separate event from installing it on a device (8) |
+| **Published name** | `oem#.inf`, the name the store gives your INF, and what `pnputil /delete-driver` takes (8) |
+| **CatRoot** | `%SystemRoot%\System32\CatRoot`, where a staged package's catalog is installed (8) |
+| **Trusted Publishers** | The certificate store of end-entity signers whose packages install without a prompt. Microsoft: for internal systems only (8) |
+| **WDK** | Windows Driver Kit. Installs into the same `Windows Kits\10\bin` tree as the SDK, but is a separate install (8) |
 
 ## Security vocabulary, used precisely
 

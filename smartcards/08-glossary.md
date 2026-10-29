@@ -33,6 +33,7 @@ Reference, not reading. Chapter references point at where the term is motivated.
 | **Pseudo-APDU** | A command the *reader* answers, not the card. Absence proves nothing about the card (1) |
 | **ISO/IEC 14443** | The contactless interface standard. Contactless ATRs are synthesised from its ATS (2) |
 | **Presence check** | A contactless reader's periodic check that an idle card is still in the field. Method and interval vary by reader; some can disturb what the card is holding (6) |
+| **Link keep-alive** | A command sent every so often during a wait, so an idle contactless link doesn't cost the card its volatile state. Must be one the applet ignores; contactless only (6) |
 
 ## Organisation
 

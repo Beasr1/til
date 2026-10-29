@@ -106,9 +106,10 @@ making the card **prove possession of a secret**: symmetrically, through a chall
 diversified key an HSM re-derives, or asymmetrically, by having the card sign a challenge
 you chose. Both are only meaningful if the certificate involved chains to a trust anchor
 you obtained somewhere other than from the card. The symmetric flow also runs against a
-clock: the card holds its challenge only so long, and the round trip to the HSM has to fit
-inside that — which over contactless can be shorter than one trip across a network. And the
-credential that unlocks any of
+clock: over contactless, an idle link can cost the card its challenge in less time than one
+round trip to the HSM. Since it's the idleness, not the time, keeping the link busy with a
+command the applet ignores can hold it, though the culprit may be the reader's firmware
+rather than the card. And the credential that unlocks any of
 this is set by **what the key's output claims**, not by the algorithm: a key proving the
 chip is genuine is gated on holding the card — often a number printed on its face — while
 a key signing on the holder's behalf is gated on the holder's PIN. Checking the card's
