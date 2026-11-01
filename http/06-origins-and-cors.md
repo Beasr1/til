@@ -92,12 +92,13 @@ the response and doesn't need to. The transfer happened.
 <script>document.forms[0].submit()</script>
 ```
 
-There are two standard defences. They work best together:
+There are three standard defences, and they work best combined:
 
 | Defence | How it works | Limit |
 |---|---|---|
 | **CSRF token** | The bank's own pages embed a secret, per-session value in each form; the server rejects requests without it. `games.example` can't read the bank's pages, so it can't learn the token | Every state-changing endpoint has to check it |
 | **`SameSite` cookie attribute** | The cookie says when the browser may attach it to a request triggered by *another site* | Works per **site**, not per origin; and browsers disagree on the default (below) |
+| **Fetch Metadata (`Sec-Fetch-Site`)** | The browser tells the server where each request came from: `same-origin`, `same-site`, `cross-site`, or `none` for a navigation the user started from the address bar or a bookmark. The server refuses state-changing requests from anywhere it doesn't expect | Browsers from before 2023 don't send it, so the server needs a fallback, such as checking `Origin` |
 
 `SameSite` has three values:
 
@@ -114,6 +115,25 @@ browser-support table on [web.dev's SameSite explainer](https://web.dev/articles
 whose prose dates from 2019 while the table itself is kept current. So "browsers default to
 Lax now" is true for most users and false for some. Set `SameSite` explicitly and you don't
 depend on which browser the user has.
+
+`SameSite` compares sites, so it can't tell your origin from another origin on the same site:
+a sibling subdomain such as `blog.example.com`, or another port on the same host.
+`Sec-Fetch-Site` can, because it says `same-site` for those and `same-origin` only for your
+own pages
+([Fetch Metadata Request Headers §2.3](https://w3c.github.io/webappsec-fetch-metadata/)).
+OWASP's
+[CSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)
+now calls the header "the primary signal for CSRF protection". It says to reject
+state-changing methods from `cross-site`, to allow `same-site` only if you trust every sibling
+subdomain, and that "a fallback to standard origin verification headers is a mandatory
+requirement for any Fetch Metadata implementation".
+
+That leaves a request with neither header, and there are two answers to it. Go 1.25's
+[`http.CrossOriginProtection`](https://pkg.go.dev/net/http#CrossOriginProtection) lets it
+through, because such requests "are currently assumed to be either same-origin or non-browser
+requests". A server that applies the check only to requests carrying its session cookie can
+refuse them instead. That fails closed, and the cost is browsers too old to send the header,
+which Go's documentation describes as "available in all browsers since 2023".
 
 ## CORS: the server opts in to being read
 
@@ -256,4 +276,4 @@ assuming no website could reach them.
    intermittently get CORS errors. A CDN sits in front of the API. What's missing, and what's
    the CDN doing?
 
-(Answers in [`08-exercises.md`](08-exercises.md).)
+(Answers in [`10-exercises.md`](10-exercises.md).)

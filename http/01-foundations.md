@@ -382,4 +382,4 @@ which is why the three versions now share one definition of what a `GET` or a `4
    of "origin" and which one they've mixed up. Then explain why a browser's security checks
    (file 06) never see your origin server's address at all.
 
-(Answers in [`08-exercises.md`](08-exercises.md).)
+(Answers in [`10-exercises.md`](10-exercises.md).)

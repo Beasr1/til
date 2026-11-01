@@ -1,4 +1,4 @@
-# 8. Exercises
+# 10. Exercises
 
 Worked answers to every **Check yourself** question, plus things to try.
 
@@ -588,8 +588,10 @@ request from the blog to the API isn't cross-site at all, so even `Strict` sends
 the cookie. Whether the blog's page can *read* the response is a separate question
 for CORS, which works on origins, and the blog is a different origin from the API.
 So the defence is CORS (don't allow-list `blog.example.com`) plus CSRF tokens for
-state-changing requests. And treat everything under your registrable domain as one
-trust zone for cookies, because the browser does.
+state-changing requests. `Sec-Fetch-Site` works too: the blog's request arrives
+marked `same-site`, not `same-origin`, so a server that requires `same-origin` for
+state-changing requests refuses it. And treat everything under your registrable
+domain as one trust zone for cookies, because the browser does.
 
 **6. Echoing `Origin`, a CDN, and intermittent CORS failures.**
 
@@ -680,18 +682,36 @@ on its own schedule. Whenever a security mechanism requires coordinated action b
 a long tail of unmaintained software, expect it to stall regardless of technical
 merit.
 
-**5. What does the try/catch wrapper destroy?**
+**5. A `Secure` cookie that WebKit drops on `http://localhost`.**
 
-The only distinction between a policy denial and a connection failure. Once both
-paths return `null`, a CSP misconfiguration and an uninstalled local program are
-indistinguishable to every caller and to every log line.
+Two decisions, made in two places. `isSecureContext` comes from Secure Contexts'
+"Is origin potentially trustworthy?": `127.0.0.0/8` and `::1/128` are trustworthy
+unconditionally, and `localhost` is trustworthy for a browser that guarantees the
+name resolves only to loopback (§3.1, §5.2). All three engines say true. Whether a
+`Secure` cookie is stored is the cookie specification's call, and it delegates: RFC
+6265 and rfc6265bis both say "secure" is "defined by the user agent", and the
+draft's storage model ignores a `Secure` cookie arriving on a connection the
+browser doesn't consider secure (§5.7, step 13). Chromium and Firefox count
+loopback as secure for cookies. WebKit's cookie path has required https, and its
+April 2026 commit says the change doesn't work until the underlying cookie storage
+accepts such cookies. So the cookie is dropped at storage, and the next request
+goes without it. The `__Host-` prefix rules out a halfway house: it requires
+`Secure` (§4.1.3.2, §5.7 step 21).
 
-The class of bug this makes unfalsifiable is a *header* problem reported as a
-*hardware* problem. The person debugging has no way to tell that the browser
-refused before touching the socket, so every hypothesis points at the local
-program: is it running, is it the right port, is the device plugged in. The
-evidence that would have ended the investigation in one line was discarded inside
-a helper written to make the API tidier.
+The workarounds:
+
+- **Local https with a locally trusted CA such as mkcert.** One-time setup per
+  machine, and a CA key that can vouch for any name, so it must never be shared or
+  installed on users' machines. In return, development matches production, prefix
+  and all.
+- **Drop `Secure` in development.** The cookie must lose `__Host-` too, so
+  development uses a different name and attributes from production, and code that
+  reads the cookie by name has to know both. Django's `SESSION_COOKIE_SECURE`
+  defaulting to `False` is this choice, and its docs warn against leaving it off.
+
+If the product is itself a local program serving its UI on loopback, these are
+production choices, not development ones, and the first means installing a CA on
+users' machines, which file 07's opening argues against.
 
 **6. A page that must reach loopback but is embedded where you don't control CSP.**
 
@@ -726,6 +746,336 @@ that the carve-out is about the address, not the scheme.
 look for whether WebSockets have become gated. This chapter's most perishable
 claim is exactly the sort of thing to verify rather than inherit.
 
+**Check `Secure` cookies on loopback in each engine.** Serve a page from
+`http://127.0.0.1:PORT` whose `POST /login` answers `204` with
+`Set-Cookie: __Host-t=1; Path=/; Secure; HttpOnly; SameSite=Strict`, then make any
+second request and look for a `Cookie` header in the server's log. Try Chrome,
+Firefox and Safari, and `http://localhost:PORT` as well as `127.0.0.1`. Then check
+whether WebKit bugs 232088 and 281149 are still open. The table of them in file 07
+is the part of that section most likely to go out of date.
+
+---
+
+## File 08 — Caching, revalidation and what a 304 rewrites
+
+**1. "`no-cache` means the browser doesn't cache it, so the `ETag` is wasted."**
+
+The browser keeps all of it, body and headers. `no-cache` is about reuse, not
+storage: the stored response "MUST NOT be used to satisfy any other request without
+forwarding it for validation and receiving a successful response" (RFC 9111
+§5.2.2.4). The directive that stops a cache keeping anything is `no-store`.
+
+So each later visit costs one round trip. The browser sends `If-None-Match` with the
+stored tag, and while the page is unchanged the server answers `304` with headers
+only: a few hundred bytes instead of the page. The `ETag` is what makes that cheap.
+Remove it, with no `Last-Modified` either, and the browser has nothing to put in a
+conditional request. The Fetch Standard adds `If-None-Match` only "If
+storedResponse's header list contains `ETag`", and `If-Modified-Since` only if it
+contains `Last-Modified`. Every visit becomes an ordinary `GET` answered by a full
+`200`: the same round trip, the whole body every time, and a stored copy that's dead
+weight.
+
+**2. `Last-Modified` only, a page edited 50 days ago, and a correction.**
+
+There's no explicit expiration time, so the cache may assign a heuristic one. RFC
+9111 §4.2.2 encourages "no more than some fraction of the interval since"
+`Last-Modified`, and says "A typical setting of this fraction might be 10%". Chromium
+uses exactly 10%: its lifetime for such a `200` is a tenth of the time between
+`Last-Modified` and the response's `Date`. Fifty days since the last edit gives about
+five days of freshness, counted from when each reader's browser fetched the page. In
+that time the browser reuses its copy without contacting you, so a reader who loaded
+the page just before the correction can see the old text for up to five days.
+
+One header prevents it: `Cache-Control: no-cache`. A stored response carrying
+`no-cache` can't be reused without validation, however fresh it is (RFC 9111 §4),
+and §4.2.2 gives exactly this advice: origin servers "are encouraged to send explicit
+directives (e.g., Cache-Control: no-cache) if they wish to prevent caching". Keep the
+`Last-Modified` too, and every visit becomes a cheap revalidation instead of a guess.
+A short `max-age` would also do, since "A cache MUST NOT use heuristics to determine
+freshness when an explicit expiration time is present in the stored response"
+(§4.2.2).
+
+**3. Hashed assets with `immutable`, `index.html` with `no-cache`, and a deploy.**
+
+The returning visitor holds the old `index.html` (stored, `no-cache`) and the old
+`app.<old hash>.js` (fresh for a year). After the deploy:
+
+1. The browser can't use the stored `index.html` without validating it, so it sends
+   `If-None-Match` with the old tag. The new build changed the HTML, if only because
+   it names a new script, so the tag doesn't match. The server sends a `200` with the
+   new HTML, which replaces the stored copy.
+2. The new HTML references `app.<new hash>.js`. That URL isn't in the cache, so it's
+   fetched.
+3. The old script stays in the cache, fresh and never asked for again, until it's
+   evicted.
+
+The design works because the one file whose URL can't change is the one that's
+always revalidated, and every file whose content can change gets a new URL.
+
+Give `index.html` the script's header and the browser holds the HTML fresh for a
+year. Where `immutable` is honoured it doesn't even revalidate on a reload: "Clients
+SHOULD NOT issue a conditional request during the response's freshness lifetime
+(e.g., upon a reload) unless explicitly overridden by the user (e.g., a force
+reload)" (RFC 8246 §2). The HTML is the only thing that tells the browser about new
+script names, so the visitor stays on the old build, old HTML and old cached script,
+until the year runs out, they force a reload, or the entry is evicted. Nothing
+errors. You just can't ship to them, and you can't fix it from the server, because
+their browser isn't asking.
+
+**4. `max-age=600` instead of `no-cache`.**
+
+The first load gets a `200` with the page policy, stored and fresh for ten minutes.
+While it's fresh, coming back to the page reuses the stored copy without contacting
+the server, so the page works and no 304 ever happens.
+
+The blank page first appears at the first revalidation. That comes from a reload
+(RFC 8246 §1 says the reload mechanism "generates a conditional request"), or from
+any visit after the ten minutes are up, when the copy is stale. That revalidation
+gets the 304 with `default-src 'none'`, the stored headers are updated, and from then
+on the page is blank on every use, including uses in the next ten minutes that never
+reach the server. The 304 also carried `max-age=600`, since it MUST repeat
+`Cache-Control` (RFC 9110 §15.4.5), so the poisoned copy is fresh for another ten
+minutes.
+
+To someone reproducing it: load the page and it works; navigate away and back and it
+works; come back a quarter of an hour later, or press reload, and it's blank; clear
+the cache and it works again. A tester who loads, checks and moves on within ten
+minutes never sees it. That's the signature of a bug in cache state. It depends on
+how old a stored copy is and how the page was reached, not on anything in the
+request.
+
+**5. `Cache-Control` chosen by `Content-Type`.**
+
+The first visit gets a `200` with `Content-Type: text/html`, so
+`Cache-Control: no-cache`, and the browser stores it. The next visit revalidates, the
+page is unchanged, and the server builds a 304. A 304 carries no `Content-Type`, so
+the rule falls through to its default and the 304 goes out with
+`Cache-Control: max-age=31536000, immutable`. RFC 9111 §3.2 says the cache replaces
+the stored value with the 304's, and none of the three engines exempts
+`Cache-Control` (file 08's table). Freshening also restarts the copy's age, which is
+"the time that has passed since it was generated by, or successfully validated with,
+the origin server" (RFC 9111 §4.2). Every returning visitor now holds the HTML as
+fresh for a year.
+
+Nothing looks broken, because today the page is exactly right. The damage shows at
+the next deploy. These visitors' browsers don't ask for the HTML, so they keep the old
+page, which references the old hashed assets, which are still in their caches, so the
+old version goes on working perfectly. You find out from a report that "the fix isn't
+live for me", or when an old client calls an API that has changed underneath it. In a
+browser that doesn't honour `immutable` (Chromium by default, per file 08), a reload
+typically still asks, and after a deploy gets the new page with `no-cache`, which
+repairs that copy. But nobody reloads a page that works, and you can't repair it from
+the server, because the browsers aren't asking. Each copy recovers only when its user
+forces a reload or clears the cache, or the entry is evicted.
+
+It also breaks a MUST. RFC 9110 §15.4.5 requires a 304 to carry the `Cache-Control`
+"that would have been sent in a 200 (OK) response to the same request", and the `200`
+would have said `no-cache`. That's why the fields on that list can't simply be left
+off, and have to be computed from something the 304 still has, such as the URL.
+
+**6. After the smallest fix, a user who hit the blank page yesterday.**
+
+They still see the blank page. Their stored copy carries `default-src 'none'`,
+written there by yesterday's 304. Today's visit revalidates, the HTML's `ETag` still
+matches, and the server sends a 304 that, after the fix, has no policy field at all.
+RFC 9111 §3.2 replaces only the fields the 304 provides, so the stored policy is left
+as it was, and the page runs under it again. The fix stops new damage. It doesn't
+undo old damage.
+
+What recovers them:
+
+- **A change to the page.** A new `ETag` means the condition fails, the server sends
+  a `200`, and a full response replaces the stored one (RFC 9111 §4.3.3), correct
+  policy and all. Any deploy that changes the HTML heals every poisoned copy on its
+  next visit, including a deploy made only for that purpose.
+- **Losing the stored copy.** The user clears the cache, the browser evicts the
+  entry, or a forced reload fetches without a condition and stores the result. The
+  Fetch Standard's "reload" cache mode "behaves as if there is no HTTP cache on the
+  way to the network" and "updates the HTTP cache with the response"; I haven't
+  checked which browser gestures use it.
+- **The other fix.** A 304 that carries the page's policy replaces the bad stored one
+  on the next revalidation, so the copy recovers with no change to the page. That's
+  computing a per-response header for 304s again, which file 08 shows is safe only
+  while a 304 from that server is always for a page; otherwise key it on the URL.
+
+What won't help is waiting. `no-cache` means the copy is revalidated on every visit,
+and every revalidation of an unchanged page is another 304 that doesn't mention the
+policy.
+
+That much follows from RFC 9111 §3.2, and it was then observed. A throwaway nginx
+switched between the three configurations, each switch confirmed from a real 304's
+headers, while Chromium 156 and Firefox 157 (Playwright 1.64.1) each kept one browser
+session open and visited the page twice per step:
+
+| The 304 carries | Chromium | Firefox |
+|---|---|---|
+| `default-src 'none'` (the bug) | First visit renders, second blank | The same |
+| No policy (the smallest fix) | Still blank | Still blank |
+| The page's policy (the other fix) | Renders | Renders |
+
+One detail the reasoning doesn't predict. Run instead as separate launches sharing a
+profile on disk, Firefox came back with its original headers after the bug's step, so
+its poisoned merge apparently hadn't been written to disk by the time it closed.
+Chromium's had been: it stayed blank across launches. Why Firefox differs wasn't looked
+into.
+
+## Things to try — file 08
+
+**Watch a revalidation by hand.** Pick a site that sends an `ETag` on its home page:
+
+```bash
+curl -s -D - -o /dev/null https://example.com/ | grep -i -E '^(etag|last-modified|cache-control)'
+curl -s -D - -o /dev/null -H 'If-None-Match: "<the etag>"' https://example.com/
+```
+
+The second should be a `304` with no body. Compare its fields with the `200`'s, one by
+one. Whatever differs on the 304 is what a browser would write into its stored copy.
+
+**Reproduce the incident, then test question 6.** Run nginx locally with the bug's
+`map`, serving one HTML page that loads one script. Load the page, then reload: blank,
+with CSP errors in the console. Switch to the smallest fix's `map`, reload nginx, and
+reload the page. As question 6 says, it stays blank until you change the HTML or clear the
+cache. Then switch to the other fix's `map` and reload once more: it recovers. Try the
+Firefox step again with a browser restart in between, and compare with question 6's
+last paragraph.
+
+**Read your engine's list.** Find the deny-list in Chromium's
+`http_response_headers.cc` (`kNonUpdatedHeaders`), Firefox's
+`nsHttpResponseHead::UpdateHeaders` or WebKit's `CacheValidation.cpp`, and check
+whether it has changed since file 08 was written. Each is short, and it's the most
+direct answer to "what will a 304 overwrite?".
+
+**Break a save with a proxy, then fix it.** Write a small server whose `GET /doc` sends
+`ETag: "42"` and whose `PUT /doc` answers `412` unless `If-Match` is exactly the current
+tag, and put nginx with `gzip on` and `gzip_types application/json` in front of it. Read
+through nginx with plain `curl`, then with `--compressed`, and compare the tags. Save with
+each. Then give `/doc` a location of its own with `gzip off` and read and save again. Last,
+have the server compress `/doc` itself, with its own `Content-Encoding: gzip` and a tag of
+its own, and check that nginx passes both through.
+
+---
+
+## File 09 — Keeping a browser signed in: cookies, tokens and where they live
+
+**1. "We use JWTs, so we're stateless and secure."**
+
+The format half is true and partial. A JWT is a signed token, so the server checks
+it without a lookup, and that is all "stateless" means here. It has a cost the claim
+leaves out: a signed token can't be ended before its `exp` without putting state back
+on the server. Signing out deletes the browser's copy, and any other copy works until
+it expires.
+
+The place half is missing, and it's the half that decides what injected script can
+do. In `localStorage` or `sessionStorage`, any script on the page can read the JWT
+and use it from anywhere until it expires. In an `HttpOnly` cookie, script can't read
+it, but the browser sends it by itself, so the app needs a CSRF defence. Whether the
+design is secure depends on that answer, not on the token being a JWT.
+
+**2. Two seconds of injected script, then the tab closes.**
+
+With both tokens in `sessionStorage`, the script reads both and sends them home in
+those two seconds. Closing the tab clears `sessionStorage`, but the copies are already
+gone. The attacker uses the access token until it expires, then trades the refresh
+token for a new pair, and can keep doing so for as long as the refresh token lives,
+or until the server revokes it. Refresh-token rotation can end it sooner. Each
+refresh returns a new refresh token and invalidates the old one, so when the real app
+next refreshes with its own copy, one of the two presents a dead token. The server
+then "cannot determine which party submitted the invalid refresh token", "but it will
+revoke the active refresh token" (RFC 9700 §4.14.2), ending the attacker's copy along
+with the user's. Without rotation, two seconds of XSS becomes a session as long as the
+refresh token's.
+
+With the access token in memory and the refresh token in an `HttpOnly` cookie scoped
+to `/auth/refresh`, the script can take the access token, if it can reach the
+variable, and use it until it expires: minutes, at most. It can't read the refresh
+token. While the page is open it can call `/auth/refresh`, since the browser attaches
+the cookie, and read the new access token from the response. But that needs the script
+to keep running in the page. Once the tab closes, the attacker holds at most one
+short-lived access token.
+
+**3. A compromised tool on another port posts a form.**
+
+Yes, the cookie goes with it. `SameSite` compares sites, and a site takes no account
+of the port, so `http://127.0.0.1:3000` and `http://127.0.0.1:8080` are the same site,
+though different origins. `Strict` doesn't apply, and a form `POST`, which needs no
+preflight (file 06), arrives carrying the session cookie.
+
+What should stop it is a check that the request came from your own origin. The
+browser marks it `Sec-Fetch-Site: same-site`, not `same-origin`, so a server that
+requires `same-origin` for cookie-authenticated writes refuses it. For a browser too
+old to send `Sec-Fetch-Site`, the fallback OWASP requires is the `Origin` header,
+which will name `http://127.0.0.1:3000`. A CSRF token also works: the tool can't read
+your pages, so it can't learn the token.
+
+**4. A leaked stateless cookie after sign-out.**
+
+Everything the user could do, until the expiry inside the cookie. Signing out deleted
+the browser's copy and nothing else. The server stores nothing, so it had nothing to
+delete, and the leaked copy still carries a valid expiry and a valid signature.
+
+There are two ways to end it:
+
+- **Change the signing key.** The leaked value stops verifying at once, and so does
+  every other session, so every user has to sign in again. It's one change and needs
+  no new storage, but it can't pick out one session.
+- **Keep state.** A deny-list of revoked tokens, a per-user time before which tokens
+  are refused, or a session store whose row signing out deletes. Each costs a lookup on
+  every request, which is what the stateless design set out to avoid. With a session
+  store, signing out really does end the session, which is what OWASP asks for.
+
+**5. A 60-second cache in front of token checks.**
+
+Up to 60 seconds after the issuer revokes it. A request in that window finds the
+cached "valid" and never asks the issuer. The worst case is a token checked a moment
+before it was revoked: it keeps working for the full 60 seconds.
+
+To make it "at once", the gateway has to hear about the revocation, or stop caching.
+It can ask the issuer on every request, paying a call each time. Or the issuer can
+tell the gateway, by publishing revoked token IDs that the gateway evicts from its
+cache. A shorter cache narrows the window without closing it.
+
+**6. RFC 6750 and RFC 10017.**
+
+They don't disagree. RFC 6750's rule has a condition, "cookies that can be sent in the
+clear", and it dates from 2012, when a cookie without `Secure` could cross the network
+as plain HTTP for anyone on the path to read. A `Secure` cookie isn't sent in the
+clear, so the rule doesn't reach it. RFC 6750 is protecting the token from the
+network.
+
+RFC 10017 is protecting it from the page. Its BFF keeps tokens out of the browser, so
+that "there are no tokens available to extract from the browser", and it requires
+`HttpOnly` cookies for the same reason. A `Secure`, `HttpOnly` cookie satisfies both:
+the network can't read it, and nor can the page's scripts. What the cookie still
+brings with it is CSRF, which needs one of file 06's defences whichever RFC you follow.
+
+## Things to try — file 09
+
+**See which of a site's cookies script can read.** Sign in to any site, open
+DevTools, and compare what `document.cookie` prints in the Console with the cookie
+list in the Application (or Storage) tab. The cookies missing from `document.cookie`
+are the `HttpOnly` ones. A session cookie that shows up in both is readable by every
+script on the page.
+
+**Find out what signing out ends.** Copy a session cookie's value from the Application
+tab, sign out, and replay it:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Cookie: session=<the value>' https://example.com/api/me
+```
+
+A `200` means the server keeps no session state, or doesn't delete it on sign-out:
+anyone holding a copy is still signed in.
+
+**Read your proxy's log format.** Look for `$http_authorization` in an nginx
+`log_format`, or for `Authorization` in whatever your framework logs for each request.
+Either one writes working credentials into your logs.
+
+**Watch an idle timeout take a draft.** In an app with an idle timeout you can shorten,
+set it to a minute, type into a form without saving, wait two minutes, then save. Does the
+page keep what you typed, or send you to sign in without it? Then list the requests the
+page makes on its own, such as polls and health checks, and find which of them the server
+counts as use: each one keeps an abandoned tab signed in.
+
 ---
 
 ## Questions worth asking me
@@ -759,3 +1109,24 @@ claim is exactly the sort of thing to verify rather than inherit.
   doesn't, and why has it fallen out of favour on the web?
 - Who decides which roots are in a public bundle, on what evidence, and what
   happens to everyone when one of them misbehaves?
+
+- What changes for a shared cache: `private`, `s-maxage`, and a CDN that
+  revalidates on behalf of many browsers and may merge their `If-None-Match` lists
+  (RFC 9111 §4.3.2)? How do you purge a CDN, and what does that do to browsers'
+  copies?
+- What does `stale-while-revalidate` (RFC 5861) trade away, and why does the Fetch
+  Standard give it a branch of its own?
+- RFC 9111 §6 lets a history mechanism show a page "even if it has expired". What
+  is the back/forward cache, and which response headers keep a page out of it?
+- Optimistic concurrency through `ETag` and `If-Match`, or a version number in the body:
+  which survives the proxies, CDNs and client libraries between my API and its users,
+  and what does each lose?
+
+- Refresh-token rotation detects a stolen token when two parties use it. What
+  exactly does the server do when it sees reuse, which party does it end, and what
+  does that cost a user on two tabs?
+- What do passkeys (WebAuthn) change about signing in, and what do they leave
+  unchanged about the session cookie that comes after?
+- NIST lets session secrets used with proof of possession, such as device-bound session
+  credentials, persist where a bearer cookie shouldn't. What does proving possession
+  change about a stolen session, and what does it leave to the timeouts?

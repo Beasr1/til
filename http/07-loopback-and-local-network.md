@@ -84,6 +84,133 @@ secure contexts — service workers, geolocation, WebCrypto — while
 > local program binds `0.0.0.0` and the page reaches it by LAN IP, you have left
 > the exemption.
 
+## A secure context doesn't mean `Secure` cookies work
+
+Everything so far is about an HTTPS page reaching out to loopback. Turn it round
+and the page itself is served from loopback: `http://localhost:5173` during
+development, or a local program's own settings page on `http://127.0.0.1:PORT`.
+The rule above makes that page a secure context, and it's tempting to read on from
+there: if `window.isSecureContext` is true, a cookie marked `Secure` should work
+too. In two of the three browser engines it does. In the third it doesn't.
+
+The observation, on macOS 26.1 with Playwright 1.64.1: a page made a same-origin
+`fetch` `POST`, and the `204` that answered it set a session cookie.
+
+```
+Set-Cookie: __Host-session=…; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict
+```
+
+| Engine | `isSecureContext` on `http://127.0.0.1:PORT` and `http://localhost:PORT` | Cookie kept? |
+|---|---|---|
+| Chromium 156 (Playwright's headless shell) | `true` | Yes, on both |
+| Firefox 157 | `true` | Yes, on both |
+| WebKit 27.2 (Playwright's build) | `true` | No, on neither: the next request went without it |
+
+Playwright's WebKit "is derived from the latest WebKit main branch sources, often
+before these updates are incorporated into Apple Safari"
+([Playwright docs](https://playwright.dev/docs/browsers)). This is WebKit, not
+Safari, and Safari itself wasn't tested.
+
+### Two decisions, made in two places
+
+The engines aren't contradicting themselves. They answer two different questions,
+defined in two different specifications, and only one of those specifications
+pins its answer down.
+
+`isSecureContext` comes from the Secure Contexts algorithm "Is origin potentially
+trustworthy?" ([§3.1](https://w3c.github.io/webappsec-secure-contexts/#is-origin-trustworthy)),
+the one this chapter has been using. Its loopback step is unconditional: "If
+origin's host matches one of the CIDR notations 127.0.0.0/8 or ::1/128 [RFC4632],
+return "Potentially Trustworthy"." The `localhost` step isn't. It applies only "If
+the user agent conforms to the name resolution rules in
+[let-localhost-be-localhost]", and §5.2 explains why: resolvers "will send
+localhost to the network for resolution in a number of circumstances", so a
+browser may trust the name "if and only if" it makes sure `localhost` never
+resolves to anything but loopback.
+
+Whether a `Secure` cookie is accepted comes from the cookie specification, and that
+has never pinned it down. [RFC 6265](https://www.rfc-editor.org/rfc/rfc6265.html#section-4.1.2.5)
+(2011) says "The Secure attribute limits the scope of the cookie to "secure"
+channels (where "secure" is defined by the user agent)." Its revision,
+[draft-ietf-httpbis-rfc6265bis](https://datatracker.ietf.org/doc/draft-ietf-httpbis-rfc6265bis/),
+keeps that sentence (§4.1.2.5) and adds a storage rule that bites here: "If the
+request-uri does not denote a "secure" connection (as defined by the user agent),
+and the cookie's secure-only-flag is true, then abort these steps and ignore the
+cookie entirely" (§5.7, step 13). Its retrieval algorithm carries a note:
+
+> Note: The notion of a "secure" connection is not defined by this document.
+> Typically, user agents consider a connection secure if the connection makes use
+> of transport-layer security, such as SSL or TLS [TLS13], or if the host is
+> trusted. For example, most user agents consider "https" to be a scheme that
+> denotes a secure protocol and "localhost" to be trusted host. (§5.8.3)
+
+"Most", not "all". And the draft disagrees with itself. Its appendix of changes
+from RFC 6265 lists "Considers potentially trustworthy origins as "secure".
+(Section 5.7)", while §5.7 itself still says "as defined by the user agent". The
+one line that would settle the question in loopback's favour is a summary line,
+not a requirement. As of 28 October 2026 the draft, at revision 22, has been
+approved and is in the RFC Editor's queue, so this is close to the text that will
+become the RFC.
+
+The `__Host-` prefix makes it all or nothing. A cookie whose name starts with
+`__Host-` "will have been set with a Secure attribute, a Path attribute with a
+value of /, and no Domain attribute" (§4.1.3.2), and the storage model ignores one
+that wasn't (§5.7, step 21). You can't keep the prefix and drop `Secure`.
+
+### What WebKit's tracker says
+
+WebKit's bug tracker records the inconsistency in so many words. Bug 281149 opens:
+"As it stands, window.isSecureOrigin is true, but you can't set secure cookies".
+The property it means is `isSecureContext`.
+
+| Bug | Title | Status on 28 October 2026 |
+|---|---|---|
+| [218980](https://bugs.webkit.org/show_bug.cgi?id=218980) | "Treat loopback addresses (127.0.0.0/8, ::1/128, localhost, .localhost) as potentially trustworthy URL" | NEW, open since November 2020 |
+| [231035](https://bugs.webkit.org/show_bug.cgi?id=231035) | "Unable to Set Cookie with Secure on Localhost without HTTPS" | Closed as a duplicate of 218980 |
+| [232088](https://bugs.webkit.org/show_bug.cgi?id=232088) | "Unable to set Secure cookie for localhost" | NEW |
+| [281149](https://bugs.webkit.org/show_bug.cgi?id=281149) | "WebKit is inconsistent about whether localhost is a secure origin or not" | REOPENED |
+
+A fix has started to land. On 3 April 2026 WebKit committed 310542@main
+([aa297f89b9a6](https://github.com/WebKit/WebKit/commit/aa297f89b9a6)), "Add
+support for `Secure` cookies for loopback hostnames". Its message says WebKit "will
+now allow retrieval of `Secure` cookies created for loopback hostnames on Cocoa
+builds only", and that on macOS it "only takes effect on >= 26.0", a condition
+fixed when WebKit is compiled, because "Those builds enforce that `localhost` and
+subdomains always resolve to loopback addresses". That's the condition Secure
+Contexts §5.2 sets for trusting the name. The message is also plain that it isn't
+enough on its own:
+
+> This change will only work correctly once the underlying cookie storage starts
+> accepting `Secure` cookies for loopback hostnames. Hence, this change, in
+> isolation does not make `Secure` cookies work correctly for loopback hostnames.
+
+On bug 232088 the commit's author calls it "one part of the change", with work
+under way on "the Darwin Network Cookie Storage". And the comment that reopened
+bug 281149 says the commit "doesn't actually solve the inconsistency", because with
+bug 218980 and bug 171934 "still unresolved we still have places where we do treat
+it as insecure". Bug 171934, "Don't treat loopback addresses (127.0.0.0/8, ::1/128,
+localhost, .localhost) as mixed content", has been open since 2017, which bears on
+this chapter's first section: the mixed-content exemption there is the
+specification's rule, and by that comment WebKit doesn't follow it everywhere yet.
+I haven't tested what Safari does with an HTTPS page opening `ws://127.0.0.1`.
+
+### What to do about it
+
+A design that relies on `Secure` cookies works on plain-http loopback in two
+engines out of three. Usually that's a development problem, because production is
+https. It's a production problem when the product is itself a local program
+serving its UI on loopback, the case this chapter started from, and some of its
+users are on Safari.
+
+| Option | What it costs |
+|---|---|
+| Serve local development over https, with a certificate from a locally trusted CA such as [mkcert](https://github.com/FiloSottile/mkcert), "a simple tool for making locally-trusted development certificates" | Setup on each machine. The local CA can vouch for any name, which is why mkcert's README warns that its `rootCA-key.pem` "gives complete power to intercept secure requests from your machine. Do not share it." Fine for a developer's machine. Not something to install on users' machines, for the reasons in the mixed-content section and [file 05](05-certificates-and-trust.md) |
+| A development-only setting that drops `Secure` | `__Host-` requires `Secure`, so the cookie needs a different name in development as well, and development stops exercising the cookie production uses. Frameworks ship this switch: Django's `SESSION_COOKIE_SECURE` defaults to `False`, and its own documentation says leaving it off "isn't a good idea" ([Django settings](https://docs.djangoproject.com/en/stable/ref/settings/#session-cookie-secure)) |
+| Leave it, and develop the flow in Chromium or Firefox | Nothing to change, and nothing tests WebKit's behaviour until the code reaches an https environment |
+
+Back to the page on `https://` reaching out to loopback, which has two more
+mechanisms to get past.
+
 ## Content Security Policy: the page blocks itself
 
 The second mechanism is the one that actually bites in production, because it is
@@ -220,10 +347,12 @@ report and are not: a **synchronous throw** is the page's own policy, and an
    CSP denial from nothing listening on the port?
 4. Why did Private Network Access's preflight design fail in practice, and what
    general principle about where to place an opt-in does that illustrate?
-5. Someone writes a connection helper that wraps `new WebSocket(...)` in
-   `try/catch` and returns `null` on failure, so that callers have one code path.
-   What diagnostic capability has been destroyed, and what class of bug becomes
-   effectively unfalsifiable?
+5. During development your app runs at `http://localhost:5173` and logs in by
+   setting `__Host-session=…; Path=/; HttpOnly; Secure; SameSite=Strict`. In
+   Chrome and Firefox it works. In WebKit the login "succeeds" and the very next
+   request is anonymous, though `window.isSecureContext` is true. Which two
+   specifications make the two decisions involved, which of them leaves its answer
+   to the browser, and what does each of the two usual workarounds cost?
 6. A page must reach a local service *and* be embedded in a customer's site whose
    CSP you do not control. What can you actually do, and what does that tell you
    about where this integration's real constraint lives?
