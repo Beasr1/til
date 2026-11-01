@@ -900,4 +900,4 @@ the reason to use it even for small payloads that hold sensitive data.
    With a claim check in place, who should delete the stored body, and what's the earliest
    time it's safe to?
 
-(Answers in [11-exercises.md](11-exercises.md).)
+(Answers in [12-exercises.md](12-exercises.md).)

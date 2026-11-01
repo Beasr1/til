@@ -3,6 +3,8 @@
 A course on the engines that chain API calls together. It covers:
 - turning a graph of steps into a run;
 - joining branches again, and knowing what a join may find missing;
+- checking that every way a run can go ends in an answer, and answering every error in one
+  shape;
 - passing data from one step to the next;
 - retrying without repeating side effects;
 - surviving a crash, or deciding not to;
@@ -28,7 +30,7 @@ I wrote this as a teacher, not as a peer. That means:
 - Code is in Go. Each core example also has Rust, C++ and JavaScript
   versions in collapsibles, and every example is run before it goes in.
 - Every chapter ends with **Check yourself** questions. Answers are in
-  [11-exercises.md](11-exercises.md).
+  [12-exercises.md](12-exercises.md).
 
 ## The one thing to understand first
 
@@ -57,6 +59,8 @@ I wrote this as a teacher, not as a peer. That means:
 | [n8n: Respond to Webhook](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.respondtowebhook/) | A workflow that answers the request that started it |
 | [KrakenD: sequential proxy](https://www.krakend.io/docs/endpoints/sequential-proxy/) | Request-style composition inside an API gateway |
 | [AWS Step Functions: workflow types](https://docs.aws.amazon.com/step-functions/latest/dg/choosing-workflow-type.html) | Standard vs Express: the job-style or request-style choice, made per state machine |
+| [AWS Step Functions: ValidateStateMachineDefinition](https://docs.aws.amazon.com/step-functions/latest/apireference/API_ValidateStateMachineDefinition.html) | Checking a definition before deploying it: errors refuse it, warnings don't |
+| [Kubernetes: validation ratcheting](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#validation-ratcheting) | Tightening a schema without making what's already stored unusable |
 | [WHATWG HTML: server-sent events](https://html.spec.whatwg.org/multipage/server-sent-events.html) | The event stream format, reconnection, and `Last-Event-ID` |
 | [nginx: ngx_http_proxy_module](https://nginx.org/en/docs/http/ngx_http_proxy_module.html) | Proxy buffering, `X-Accel-Buffering`, and the read timeout a quiet stream has to beat |
 | [JSONata](https://docs.jsonata.org) / [jsonata-js](https://github.com/jsonata-js/jsonata) / [gnata](https://github.com/recolabs/gnata) | The expression language, its reference implementation, and a Go one |
@@ -79,6 +83,7 @@ I wrote this as a teacher, not as a peer. That means:
 |---|------|---------------------|
 | 2 | [Graphs and scheduling](02-graphs-and-scheduling.md) | ⭐ Reject a cyclic workflow with a useful error, write a scheduler that owns a run's state, and say what happens to a step whose parent was skipped |
 | 9 | [Joins: a step with more than one way in](09-joins-a-step-with-more-than-one-way-in.md) | Name the kinds of join in BPMN's, the Workflow Patterns' and Airflow's terms, say why an OR-join needs no look-ahead in a DAG, mark a join's required edges, and work out before any run what its mapping may find missing. Read after 2, and §9.4 and §9.6 after 3 |
+| 10 | [Every way ends in an answer](10-every-way-ends-in-an-answer.md) | Check a definition before it's published without stopping what's already served, find a branch no answer follows, make each step's failures a choice, and answer every error in one shape. Read after 8 and 9 |
 | 3 | [Mapping data between steps](03-mapping-data-between-steps.md) | Build a request from earlier results with JSONata, put limits on an expression someone else wrote, and explain why preview and run must share an evaluator |
 | 4 | [Retries, idempotency and durability](04-retries-idempotency-and-durability.md) | Retry a POST without doing it twice, honour `Retry-After`, and choose how much of a run should survive a crash |
 | 8 | [Recording a run, and following it live](08-recording-a-run-and-following-it-live.md) | Record each step without slowing the run, keep secrets and cut-up bodies out of the record, stream a run's progress past proxies that buffer and time out, and say whose fault a failed run was. Read after 4 |
@@ -100,8 +105,8 @@ I wrote this as a teacher, not as a peer. That means:
 
 | # | File | |
 |---|------|---|
-| 10 | [Glossary](10-glossary.md) | Terms, one line each |
-| 11 | [Exercises & answers](11-exercises.md) | Worked answers, things to try, and questions to ask |
+| 11 | [Glossary](11-glossary.md) | Terms, one line each |
+| 12 | [Exercises & answers](12-exercises.md) | Worked answers, things to try, and questions to ask |
 
 Read file 01 first: every other file assumes its vocabulary and its data
 document. File 04 also assumes 02. Files 03, 05 and 06 need only 01, so read
@@ -109,7 +114,8 @@ them in any order. File 07 leans on most of the others, 06 above all. File 08
 was added later and takes the next number, but it builds on 02's scheduler and
 04's durability levels, so it's listed in Part 1, after 04. File 09 came later
 still and builds on 02 §2.6's rules, so it's listed straight after 02; its
-§9.4 and §9.6 also use 03 §3.3 on what a mapping does with a missing step.
+§9.4 and §9.6 also use 03 §3.3 on what a mapping does with a missing step. File 10 came
+after that, and builds on 08 §8.8's answers and 09 §9.4's routes, so it's listed after 09.
 
 ## If you're short on time
 
@@ -117,6 +123,7 @@ still and builds on 02 §2.6's rules, so it's listed straight after 02; its
 - **Letting users type URLs into your product:** file 05, all of it.
 - **A retried step did its side effect twice:** file 04.
 - **A step after a branch never runs, or runs without the data it needs:** file 09, §9.3 and §9.4.
+- **A published workflow that answers nothing on some branch, or leaks an upstream's errors:** file 10.
 - **Building an editor with a live preview:** file 03.
 - **A live run view that updates only at the end, or drops after a minute:** file 08, §8.6.
 - **Deciding what a run record may store:** file 08, §8.3.

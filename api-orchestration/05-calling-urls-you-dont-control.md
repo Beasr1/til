@@ -1042,4 +1042,4 @@ function pathSegment(v) {
    resource, say what nginx forwards and why, and explain why escaping more characters
    wouldn't have helped.
 
-(Answers in [11-exercises.md](11-exercises.md).)
+(Answers in [12-exercises.md](12-exercises.md).)

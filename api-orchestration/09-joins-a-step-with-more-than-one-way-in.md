@@ -1284,4 +1284,4 @@ initialised "MUST result in the standard bpel:uninitializedVariable fault" (§8.
    `start`'s edges: does `j1` fire? Why does the 2002 paper say no rule can be right here, and
    what did BPEL and MQSeries Workflow do about it?
 
-(Answers in [11-exercises.md](11-exercises.md).)
+(Answers in [12-exercises.md](12-exercises.md).)

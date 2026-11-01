@@ -1065,4 +1065,4 @@ enforcing them in the validator, where they hold for any k.
    achieve that it couldn't before, what it still can't, and which of the paper's patterns
    describes the new design.
 
-(Answers in [11-exercises.md](11-exercises.md).)
+(Answers in [12-exercises.md](12-exercises.md).)

@@ -1,4 +1,4 @@
-# 10. Glossary
+# 11. Glossary
 
 Reference, not reading. Each entry points at the file that explains it. Terms several
 files use list each of them.
@@ -72,6 +72,7 @@ files use list each of them.
 | **Edge** | "B depends on A", optionally with a condition | [01 §1.3](01-foundations.md#13-vocabulary) |
 | **Egress proxy** | A hardened out-of-process control (e.g. Smokescreen) that resolves and filters all outbound traffic independently of the engine | [05 §5.10](05-calling-urls-you-dont-control.md#510-defence-in-depth-an-egress-control-outside-the-engine) |
 | **Entity tag (`ETag`)** | An opaque label for one version of a resource's representation; strong by default, weak with `W/` | [06 §6.8](06-describing-apis.md#68-optimistic-concurrency-etag-if-match-and-412) |
+| **Error body** | One expression a workflow answers every error it passes on with: over the run, and the error as `{code, detail, node}` with the upstream's `status`, `headers` and `body` when it answered. Unwritten, problem details | [10 §10.5](10-every-way-ends-in-an-answer.md#105-one-shape-for-every-error) |
 | **`errors` extension** | The list of `detail` and `pointer` pairs in RFC 9457's validation example; an example extension, not a standard member | [06 §6.5](06-describing-apis.md#65-errors-as-problem-details-rfc-9457) |
 | **`$eval`** | JSONata function that parses and evaluates a string as an expression; turns data into code, so treat it as dangerous in a mapping | [03](03-mapping-data-between-steps.md) |
 | **Evaluator** | The library that runs an expression, such as jsonata-js or gnata; different evaluators can give different results | [03](03-mapping-data-between-steps.md) |
@@ -86,6 +87,7 @@ files use list each of them.
 | **Extension member** | A problem-details member defined by a problem type; clients must ignore ones they don't recognise | [06 §6.5](06-describing-apis.md#65-errors-as-problem-details-rfc-9457) |
 | **External Storage** | Temporal's built-in claim check for large payloads; public preview as of October 2026 | [04 §4.7](04-retries-idempotency-and-durability.md#47-large-payloads-and-the-claim-check) |
 | **Facts (of an analysis)** | What an analysis knows at a step. For a join: for each earlier step, the set of ways it may have ended, an answer or not run | [09 §9.4](09-joins-a-step-with-more-than-one-way-in.md#94-what-may-be-missing-a-may-and-must-analysis) |
+| **Fail on purpose** | A step's failures set to end the run, chosen rather than defaulted. The other choice is an edge from its catch block; neither is a problem at publishing, and both is a contradiction | [10 §10.4](10-every-way-ends-in-an-answer.md#104-failures-a-choice-not-a-default) |
 | **Fail-fast** | Failure policy that cancels the run on the first failure: running steps are cancelled, unstarted ones never start | [02 §2.7](02-graphs-and-scheduling.md#27-failure-policy-fail-fast-or-carry-on) |
 | **Fan-out, fan-in** | One step feeding several; several feeding one | [01 §1.3](01-foundations.md#13-vocabulary) |
 | **Finished ancestors rule** | A step's mapping sees only ancestors that have finished, so what it sees doesn't depend on timing | [01 §1.5](01-foundations.md#15-the-running-example-end-to-end) |
@@ -130,6 +132,7 @@ files use list each of them.
 | **Lease** | An owner and a heartbeat on a run, so another instance can tell a dead owner from a live one and take the run over | [04 §4.6](04-retries-idempotency-and-durability.md#46-how-much-of-a-run-survives-a-crash), [08 §8.4](08-recording-a-run-and-following-it-live.md#84-runs-a-crash-interrupts) |
 | **Lethal trifecta** | Simon Willison's name for private data, untrusted content and external communication in one agent | [07 §7.9](07-agents-that-build-workflows.md#79-safety) |
 | **Link-local address** | `169.254.0.0/16` (incl. `169.254.169.254`) / `fe80::/10`: reachable only on the local link, never routed; not public | [05 §5.1](05-calling-urls-you-dont-control.md#51-the-problem), [05 §5.4](05-calling-urls-you-dont-control.md#54-which-ranges-to-refuse) |
+| **Loose end** | A block no run that takes it can answer from: its route disagrees with every answer's route | [10 §10.3](10-every-way-ends-in-an-answer.md#103-finding-a-road-that-ends-nowhere) |
 | **Lost update** | Two clients read, modify and write the same resource, and the second write silently erases the first | [06 §6.8](06-describing-apis.md#68-optimistic-concurrency-etag-if-match-and-412) |
 | **Mapping** | An expression that builds a step's request, or the run's output, from the data document | [01 §1.3](01-foundations.md#13-vocabulary) |
 | **May analysis, must analysis** | Static analysis of what holds on some path (may) or on every path (must). The join analysis keeps may-sets and reads "certain" off them | [09 §9.4](09-joins-a-step-with-more-than-one-way-in.md#94-what-may-be-missing-a-may-and-must-analysis) |
@@ -170,6 +173,7 @@ files use list each of them.
 | **Prompt injection** | Text a model treats as instructions when it was meant as data; OWASP LLM01 in both the 2025 and 2026 lists | [07 §7.9](07-agents-that-build-workflows.md#79-safety) |
 | **Protocol error (MCP)** | A JSON-RPC error for an unknown tool, a malformed request or a server fault; less likely to reach the model | [07 §7.5](07-agents-that-build-workflows.md#75-errors-the-agent-can-act-on) |
 | **Proxy buffering** | A reverse proxy reading the server's response before passing it on. On by default in nginx, which holds an event stream until it ends if it can't track the body's length; `X-Accel-Buffering: no` turns it off for one response | [08 §8.6](08-recording-a-run-and-following-it-live.md#86-what-sits-between-the-server-and-the-browser) |
+| **Publish-time check** | A rule a definition meets when it's published rather than when it runs, so adding one doesn't stop revisions already published from answering | [10 §10.1](10-every-way-ends-in-an-answer.md#101-three-moments-to-check-editing-publishing-running), [10 §10.2](10-every-way-ends-in-an-answer.md#102-tightening-a-check-without-breaking-whats-published) |
 | **Published** | The workflow version that runs for real | [07](07-agents-that-build-workflows.md) |
 | **RE2** | A regex engine that guarantees time linear in the input by leaving out backreferences and look-around; Go's `regexp` uses its syntax | [03](03-mapping-data-between-steps.md) |
 | **Ready, ready set** | A step whose parents have all resolved and whose rule says run, waiting for a slot; the set of them, kept in declaration order | [02 §2.4](02-graphs-and-scheduling.md#24-the-ready-set-and-a-concurrency-limit) |
@@ -190,6 +194,7 @@ files use list each of them.
 | **Resume / re-run** | Resuming continues a run under its run id, so derived keys repeat; re-running starts a new run with new keys | [04 §4.3](04-retries-idempotency-and-durability.md#43-retrying-a-post-safely-idempotency-key) |
 | **Retry policy** | Temporal's per-activity settings: initial interval, backoff coefficient, maximum interval, maximum attempts, non-retryable errors | [04 §4.5](04-retries-idempotency-and-durability.md#45-one-attempt-or-the-whole-sequence) |
 | **`Retry-After`** | Response header saying how long to wait before trying again, as delay-seconds or an HTTP-date (RFC 9110 §10.2.3) | [04 §4.4](04-retries-idempotency-and-durability.md#44-honouring-retry-after) |
+| **Road end** | A block no edge leaves: where a loose end is reported, so one dead branch gives one message | [10 §10.3](10-every-way-ends-in-an-answer.md#103-finding-a-road-that-ends-nowhere) |
 | **Rolling update** | Replacing a service's processes a few at a time, so old and new run at once. Kubernetes's default; it surges a one-replica Deployment to two pods | [08 §8.4](08-recording-a-run-and-following-it-live.md#84-runs-a-crash-interrupts) |
 | **Rule** | What a step does once its parents resolve: run, skip, or become upstream-failed. Airflow calls these trigger rules | [02 §2.6](02-graphs-and-scheduling.md#26-conditional-edges-and-skip-cascades), [09 §9.3](09-joins-a-step-with-more-than-one-way-in.md#93-join-conditions-and-required-edges) |
 | **Run** | One execution of a workflow with one input | [01 §1.3](01-foundations.md#13-vocabulary) |
@@ -236,7 +241,9 @@ files use list each of them.
 | **Unreachable code** | Code no run can execute: a compile error in Java (JLS §14.22), a vet warning in Go. A join that can never run is the workflow version | [09 §9.5](09-joins-a-step-with-more-than-one-way-in.md#95-contradictions-joins-that-cant-run-edges-that-cant-be-taken) |
 | **Upstream** | In this course, the API a step calls. In Airflow, a task's dependencies | [01 §1.3](01-foundations.md#13-vocabulary) |
 | **Upstream failed** | Step status: a parent it needed failed, so it never ran. Airflow's `upstream_failed`; GitHub Actions calls this "skipped" | [02 §2.6](02-graphs-and-scheduling.md#26-conditional-edges-and-skip-cascades) |
+| **Validation ratcheting** | Kubernetes, for custom resources: an update may leave a resource invalid only where the invalid parts weren't changed by it. Stable since v1.33 | [10 §10.2](10-every-way-ends-in-an-answer.md#102-tightening-a-check-without-breaking-whats-published) |
 | **Vicious circle** | Two OR-joins in a loop, each waiting to learn whether the other fires; no formal rule matches the OR-join's informal meaning there (van der Aalst, Desel and Kindler, 2002) | [09 §9.2](09-joins-a-step-with-more-than-one-way-in.md#92-why-the-or-join-is-hard-in-general-and-easy-here) |
+| **Warning vs error, in validation** | Step Functions' diagnostic severities: warnings don't prevent a deploy, errors do | [10 §10.1](10-every-way-ends-in-an-answer.md#101-three-moments-to-check-editing-publishing-running) |
 | **Way in** | One edge into a join, taken as a case to preview: a join's mapping is previewed once per way in, with the required edges' steps fixed | [09 §9.6](09-joins-a-step-with-more-than-one-way-in.md#96-previewing-a-join) |
 | **Workflow** | A definition: steps and the dependencies between them | [01 §1.3](01-foundations.md#13-vocabulary) |
 | **Workflow definition** | A workflow written down as data (steps, dependencies, mappings, policies) that an engine executes | [01 §1.2](01-foundations.md#12-the-chain-as-data) |

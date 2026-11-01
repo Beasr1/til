@@ -1,4 +1,4 @@
-# 11. Exercises
+# 12. Exercises
 
 Worked answers to every **Check yourself** question, then things to try and questions
 worth asking me.
@@ -1164,6 +1164,70 @@ never letting the question arise. YAWL picks an answer instead, treating other O
 AND-joins while deciding one, and pays for it with a state-space analysis.
 
 ---
+
+## File 10 — Every way ends in an answer
+
+**1. Loose end or not.**
+
+(a) Yes, one, at `user`'s `404`. No edge leaves it, so it's a road end. Its route is
+`{user: 404}`. The only answer, through `crm`, needs `crm` to have run, and `crm` needs
+`orders` and `prefs`, which need `user`'s `2xx`. The two routes disagree about `user`, so no
+run that takes the `404` can answer.
+
+(b) None. `user`'s `404` has an answer joined to it, so it answers through that. `audit`'s
+`2xx` is a road end, but its route, `{user: 2xx, audit: 2xx}`, doesn't disagree with the
+`200` answer's, `{user: 2xx, orders: 2xx, prefs: 2xx, crm: 2xx}`: one run takes both, and
+answers. What `audit` does when it *fails* is §10.4's question, not this one.
+
+(c) One, at `fallback`'s `2xx`, not at `user`'s `404`. `user`'s `404` has an edge onward,
+so it's judged where the edge leads. `fallback`'s block is the road end, and its route,
+`{user: 404, fallback: 2xx}`, disagrees with the answer's about `user`. Reporting both would
+give the author two messages for one fix: join `fallback` to an answer.
+
+(d) None, and that's the miss §10.3 owns up to. Routes ignore conditions, so `letter`'s route,
+`{user: 2xx, prefs: 2xx, letter: 2xx}`, doesn't disagree with the answer's. But the two
+conditions are complements: whenever `letter` runs, `prefs`'s edge to `crm` wasn't taken, so
+`crm` is skipped and the run gives no answer. At run time the caller gets the last-resort
+answer. The check is sound, since it claimed nothing false, and not complete, since this loose
+end was real.
+
+**2. A new check where every run starts.**
+
+The month-old revision stops answering at all: every run is refused before it starts, so every
+caller gets an error, though nothing they or the workflow's author did changed. Two ways out:
+
+- Put the check where only new revisions pass, at publishing. The old revision keeps answering
+  as it did, and the next one published meets the rule. The cost is two lists of rules, "can
+  this run" and "may this be published", to keep apart on purpose, and old revisions that keep
+  their flaw until someone republishes.
+- Ratchet, as Kubernetes does: let a definition through when every part that fails the new
+  rule was already there before the change. The cost is knowing what was there before, part by
+  part, and a rule whose answer depends on history as well as on the definition.
+
+A third way works only sometimes: migrate the stored definitions to satisfy the rule. That needs
+a mechanical fix, such as a rename. A loose end has none, since only the author knows which
+answer the branch should give.
+
+**3. "Fail the run" and an edge from the catch block.**
+
+They say opposite things about the same failure. The flag says it ends the run; the edge says
+the run goes on down it. A run can do only one. If the flag wins, the edge is never taken: a
+dead edge, as in 09 §9.5. If the edge wins, the flag is a lie a reader will believe. Either way
+the definition says something false, and neither reading is safe to pick for the author, so
+refuse to publish it until one goes. Redundant would mean both say the same thing.
+
+**4. An upstream's `404`, passed on.**
+
+With no error body, the caller gets problem details at `404`, in the engine's words: a `detail`
+naming the step and the status it got, `"user answered 404"` say, and nothing of the upstream's
+body. With `{ 'error': error.code }`, the caller gets `{"error": …}` at `404`, holding the
+engine's code for an upstream that answered an error status, whatever the engine calls it.
+
+Passed straight through, the caller would have read `"user u-404 not in shard eu-3"`: that users
+are sharded, how shards are named, and that `eu-3` exists. RFC 9457 §4 says problem details
+"are not a debugging tool for the underlying implementation", and OWASP API8:2023 lists "Error
+messages include stack traces, or expose other sensitive information" as a sign of a
+misconfigured API.
 
 ## Things to try
 

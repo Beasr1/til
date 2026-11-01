@@ -175,7 +175,7 @@ flowchart LR
 | Course | One line | Start at |
 |---|---|---|
 | [android](android/README.md) | How an Android app is isolated, signed, booted and attested, and how each defence is attacked | `01-the-android-platform` |
-| [api-orchestration](api-orchestration/README.md) | Engines that chain API calls: graphs and joins, data between steps, retries, SSRF, API contracts, recording runs and following them live, and agents that build workflows | `01-foundations` |
+| [api-orchestration](api-orchestration/README.md) | Engines that chain API calls: graphs and joins, data between steps, retries, SSRF, API contracts, recording runs and following them live, checking every way ends in an answer, and agents that build workflows | `01-foundations` |
 | [clickhouse](clickhouse/README.md) | What ClickHouse does with the rows an application sends it | `01-what-clickhouse-does-with-a-table` |
 | [css](css/README.md) | Stateful, animated UI with little or no JavaScript | `01-foundations` |
 | [docker](docker/README.md) | The build cache, and how it ships broken images silently | `01-images-and-layers` |
