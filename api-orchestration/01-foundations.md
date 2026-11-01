@@ -560,4 +560,4 @@ the spectrum.
    in §1.4, explain why that alone doesn't make it request-style, and what would have to
    change for it to answer reliably within 200 ms.
 
-(Answers in [09-exercises.md](09-exercises.md).)
+(Answers in [11-exercises.md](11-exercises.md).)

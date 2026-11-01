@@ -1,4 +1,4 @@
-# 9. Exercises
+# 11. Exercises
 
 Worked answers to every **Check yourself** question, then things to try and questions
 worth asking me.
@@ -310,7 +310,10 @@ What each guardrail protects: `stack` stops recursion before it exhausts the sta
 `timeout` stops an evaluation that keeps taking steps, but it's checked between steps, so it can't
 interrupt one regex match or one long built-in (jsonata-cpp overran a 1 s timeout by more than ten
 times). `sequence` stops a sequence growing past a length, but memory can peak in gigabytes before
-it fires (5.5 GB in gnata in §3.6). None of them bounds memory, and in Node none stops the
+it fires (5.5 GB in gnata in §3.6). In gnata it's checked once a step's result exists, so a
+lower limit doesn't help: at 10,000, a hundred-million-item cross product still reached 1.36 GB
+before the timeout, and a string doubled by recursion isn't a sequence at all ("Sizing the
+sequence limit" in §3.6). None of them bounds memory, and in Node none stops the
 evaluation blocking every other request. What still needs a boundary: run evaluation in a worker
 or process with a hard memory limit and a wall-clock kill, with the regex engine swapped for RE2
 (gnata does this already; jsonata-js accepts `RegexEngine`), and cap the size of the input.
@@ -459,8 +462,6 @@ lifecycle rule on the store (expire after the TTL) is needed as well as explicit
 
 ## File 05 — Calling URLs you don't control
 
-Worked answers to the chapter's **Check yourself**. Merge into `09-exercises.md`.
-
 **1. Two inputs that beat a private-range string check, and the defeat each uses.**
 
 First, an **alternative spelling**. `http://2130706433/` carries no dotted quad, so a check
@@ -525,18 +526,7 @@ engine re-validate each `Location` (literal check + resolver guard) before dispa
 next hop. The two changes together — literal pre-check *and* disabled redirects — are what
 make the Rust guard as tight as Go's `Control` hook, which sees every dial regardless.
 
-**5. Why a hostname allow/deny list doesn't block the metadata endpoint.**
-
-Because the control is keyed on the string and the danger is the address. `169.254.169.254`
-not being "in the list" stops only that literal spelling; the author can reach the same
-address through a decimal (`2852039166`), through a different name that resolves to it,
-through an IPv4-mapped IPv6 form, or through a rebinding name that the allow-list has no way
-to pin. Smokescreen says this about its own hostname ACL — it matches "hostnames as they
-appear in the request", and to filter on "the destination IP address after DNS resolution"
-you must use its IP-filtering config instead. So the instruction is: don't block by
-hostname, block by the resolved IP, which is what the dial-time guard does.
-
-**6. Arbitrary headers, IMDSv2, and whether the IP guard is redundant.**
+**5. Arbitrary headers, IMDSv2, and whether the IP guard is redundant.**
 
 It isn't, and the gap is precisely the one AWS names. IMDSv2's defence is that a session
 needs a `PUT` and a secret token header, which AWS says protects "the vast majority of SSRF
@@ -550,6 +540,27 @@ headers included — is sent. So the two aren't redundant: IMDSv2 is a cloud-sid
 that an arbitrary-header SSRF walks through, and the IP guard is the engine-side control that
 actually stops the connection. (Limiting which headers a workflow may set is the third,
 separate, lever.)
+
+**6. `url.PathEscape`, nginx with a URI part, and a different resource.**
+
+Send `id` = `../admin`. `url.PathEscape` escapes the slash and leaves the dots, since dots
+are unreserved, so the engine requests `/v1/accounts/..%2Fadmin/statement`. To nginx that's
+one segment only until it normalises the path. It matches `location` blocks against "a
+normalized URI, after decoding the text encoded in the “%XX” form, resolving references to
+relative path components “.” and “..”", and with a URI part on `proxy_pass` it forwards that
+normalised form. Decoding gives `/v1/accounts/../admin/statement`, and resolving the `..`
+gives `/v1/admin/statement`, which still starts with `/v1/`, matches the location, and goes
+to the app. The app serves whatever lives at `/v1/admin/statement`, a resource no account id
+was meant to reach. A deeper climb like `../../x` would leave `/v1/` and miss this location,
+so the traversal works within the prefix the proxy serves.
+
+Escaping more characters wouldn't help, because nginx undoes any escaping before it resolves
+the dots. A stricter escaper produces the same `..%2Fadmin`. Escaping the dots as well
+(`%2E%2E%2Fadmin`) is decoded just the same: §5.11's table shows `/v1/users/%2E%2E/admin/orders`
+forwarded as `/v1/admin/orders`. The fix has to be on the value: refuse a path value that
+holds `/` or `\`, or is empty, `.` or `..`. The same request sent straight to Go's `ServeMux`
+would have been harmless, routed as the account `../admin`. That's the point of the ⚠️: the
+engine can't see which of the two stacks is behind the hostname.
 
 ---
 
@@ -574,19 +585,7 @@ the editor's developers would see at once. A breaking-change check that compares
 description with the last released one is the third option, aimed at exactly this: in code-first
 the contract changes as a side effect of a Go diff, so something has to diff the contract itself.
 
-**2. `/a~01b` in `{"a~1b": 1, "a/b": 2}`.**
-
-Decode in the RFC's order. Replacing `~1` with `/` first changes nothing, because `a~01b` doesn't
-contain `~1`: it contains `~0` followed by `1`. Replacing `~0` with `~` then gives `a~1b`, which
-selects 1.
-
-Decoding `~0` first turns `a~01b` into `a~1b`, and then the `~1` replacement turns that into `a/b`,
-which selects 2. That's worse than an error because nothing signals it. The pointer resolves, to a
-real member, with a plausible value. An error message highlights the wrong field; a JSON Patch
-operation edits or deletes the wrong member; a test passes. §6.6's single-pass decoder can't make
-the mistake, because it never re-reads its own output.
-
-**3. `remove /steps/1` after someone inserted at index 0.**
+**2. `remove /steps/1` after someone inserted at index 0.**
 
 The editor computed index 1 against the array it loaded, where step 1 was, say, `orders`. After the
 colleague's insert at index 0, everything moved up one: index 1 now holds what used to be index 0,
@@ -603,7 +602,7 @@ refused, and nothing is removed; §6.4's server answered that case with `409`. T
 well: `If-Match` refuses any concurrent change, the `test` refuses only a change to the element
 you meant.
 
-**4. A `422` pointer that highlights nothing.**
+**3. A `422` pointer that highlights nothing.**
 
 The pointer and the editor disagree about which document it's relative to. The server wrote
 `/steps/2/request/url` relative to the workflow the patch would have produced. The editor resolved
@@ -618,7 +617,7 @@ description says "Each pointer in errors is relative to the patched workflow, no
 The editor then applies its own patch to its local copy, or uses the workflow the server returns,
 and resolves the pointer there.
 
-**5. A drift check that passes while a generated file is missing.**
+**4. A drift check that passes while a generated file is missing.**
 
 `git diff` shows "the changes you made relative to the index". A file the generator has just
 created has never been added, so it isn't in the index, and `git diff --exit-code` doesn't see it
@@ -631,7 +630,7 @@ generated directories before `git diff --exit-code`, which makes new files appea
 generate into a fresh directory and compare whole directories. Pin the generator versions either
 way, or the check fails on every machine whose generator differs.
 
-**6. A retried `PATCH` that gets `412` for its own change.**
+**5. A retried `PATCH` that gets `412` for its own change.**
 
 The first attempt applied the patch and moved the tag from `"7"` to `"8"`. Its response was lost.
 The retry still says `If-Match: "7"`, the server compares it with `"8"` under strong comparison,
@@ -649,6 +648,23 @@ have already been applied" is hard to judge for a patch, so the cleaner answer i
 key on the `PATCH` (file 04 §4.3): the server recognises the retry and returns the stored `200`.
 Failing that, the client can re-fetch and check whether its change is already there before
 treating the `412` as a conflict.
+
+**6. A new operation breaks a file nobody touched.**
+
+The failure is in the file where your type is handed to the generated code: the call to
+`NewStrictHandler(yourType{}, …)`, usually in the router's constructor. Regenerating added a
+`DeleteWorkflow` method to `StrictServerInterface`, so your type no longer satisfies it, and Go
+reports that at the point where it's used *as* that interface: "does not implement
+gen.StrictServerInterface (missing method DeleteWorkflow)". The interface lives in the generated
+package because that package is its consumer: the generated router calls the methods.
+
+grpc-go's defaults would have compiled. Its generated code has your server embed
+`Unimplemented<ServiceName>Server`, which supplies every method. The new RPC would answer
+"unimplemented" at run time until someone wrote it. That's the better behaviour when one
+published service definition is shared by many servers that upgrade separately: a compile break
+in all of them for a method some will never serve is the wrong default. When the description
+and the only server live in the same repository and change in the same commit, the build
+failure is better: it's the earliest warning there is, and it costs nothing.
 
 ---
 
@@ -809,6 +825,346 @@ model in it again.
 
 ---
 
+## File 08 — Recording a run, and following it live
+
+**1. Saves inside the scheduler, at 100 ms and at 400 ms.**
+
+At 100 ms, `user`'s save delayed the run, because `orders` and `prefs` started only once it was
+done; `orders`'s delayed `crm` the same way; and `crm`'s delayed the end of the run. `prefs`'s
+save cost nothing: it happened while `orders` was still running, so although the scheduler was
+busy, nothing was waiting for it. A save costs time only when it sits between a step finishing
+and the next thing on the critical path. Three saves of about 100 ms each turned 576 ms into
+882.
+
+At 400 ms, with the invented durations and nothing else taking time:
+
+```
+inside the scheduler
+     0  user starts
+   120  user done; saving user until 520
+   520  orders and prefs start
+   600  prefs done; saving prefs until 1000
+   820  orders done, but its report waits: the scheduler is busy saving
+  1000  orders received; saving orders until 1400
+  1400  crm starts
+  1550  crm done; saving crm until 1950
+  1950  the run ends; saving the run until 2350
+
+on a writer goroutine
+     0  user starts
+   120  user done; orders and prefs start          writer saves user   120 to 520
+   200  prefs done                                 writer saves prefs  520 to 920
+   420  orders done; crm starts                    writer saves orders 920 to 1320
+   570  crm done; the run ends                     writer saves crm    1320 to 1720
+                                                   writer saves run    1720 to 2120
+```
+
+Inside the scheduler the run takes 1,950 ms instead of 570, and everything is saved at 2,350.
+`prefs`'s save now counts as well: at 400 ms it outlasts the 220 ms `orders` still had to run,
+and `orders`' report waits until the scheduler is out of the save, because one goroutine can't
+save and receive at once. A save hides behind the work it overlaps only while it's shorter than
+that work. On the writer goroutine the run takes 570 ms whatever the database does, and
+everything is saved at 2,120.
+
+At 1,000 ms, someone reading the record in the writer version sees `user` and `prefs` succeeded,
+no final status yet for `orders` or `crm`, and the run still running, although it ended 430 ms
+ago and a request-style caller may already have its answer. That's the price of the writer: the
+record lags the run by up to one save per queued record. It's why a live view should follow the
+event stream, which is appended under a short lock, rather than poll the record. And if the
+record lags by seconds routinely, the database is the problem; the writer only keeps it from
+being the run's problem too.
+
+**2. A token exchange, an `access_token` query parameter and a Slack webhook.**
+
+§8.3's code redacts headers and URLs and caps bodies. It doesn't redact bodies. So:
+
+- **Step 1's request body** keeps `client_secret=…` whole, if the record stores request bodies.
+  Its headers are fine.
+- **Step 1's response** is a small, valid JSON body, so `keepBody` stores it whole, access token
+  included. (No refresh token: for the client credentials grant RFC 6749 §4.4.3 says "A refresh
+  token SHOULD NOT be included.")
+- **Step 2's URL** has its `access_token` replaced, because the parameter's name contains
+  `token`. It protects nothing: the same token is already in step 1's response.
+- **Step 3's URL** is stored whole. The secret is a path segment, and no name says so.
+
+What would have caught each:
+
+- The client secret is a credential the engine stores for the workflow, so mask it by value
+  wherever it turns up, as GitHub Actions does with registered secrets. The name rule applied to
+  form bodies would catch it too, since `client_secret` contains `secret`.
+- The access token is new: no stored value matches it. The name rule applied to JSON keys catches
+  `access_token`. Better, the workflow's author marks the token step's bodies as sensitive, and
+  the engine registers values it extracts from a sensitive step for masking, as GitHub tells you
+  to register a JWT you made from a secret. Redacting step 2's URL was right but late; the secret
+  has to be handled where it's born.
+- The webhook URL should never be plain text in the workflow. If it comes from the engine's
+  secret store, the record can keep the reference, such as `{{ secrets.slack_webhook }}`, or mask
+  the value. If an author typed it into the definition, the definition holds a secret, and that's
+  the bigger problem.
+
+**3. Passing an upstream's `503` and `Retry-After` through.**
+
+A well-behaved client reads `503` as RFC 9110 defines it: "the server is currently unable to
+handle the request due to a temporary overload or scheduled maintenance". The server it means is
+the engine. With `Retry-After: 30` it reads "how long the service is expected to be unavailable
+to the client" (§10.2.3), so it backs off from the engine for 30 s, including for workflows that
+never touch `prefs`'s upstream. Retry logic and circuit breakers in front of the engine count the
+failure against the engine. A client that retries `503`s automatically re-runs the whole
+workflow after 30 s, every step again, including any POST that had already happened.
+
+The engine should answer `502` with a problem detail that names the step and the upstream's
+status (§8.8). Before answering at all, it should have dealt with the `Retry-After` itself, in
+file 04 §4.4's terms: in a request-style run the step's budget is what's left of the caller's
+deadline, and a 30 s floor is more than any such caller waits, so the step gives up at once
+rather than sleeping ("If it asks for more than the step has left, give up now"). Then the hint
+can travel on, honestly labelled: RFC 9110 defines `Retry-After` generally as "how long the user
+agent ought to wait before making a follow-up request", so a `Retry-After: 30` on the 502, or an
+extension member in the problem detail, tells the caller that running the workflow again sooner
+won't help. What the engine mustn't do is make the upstream's unavailability look like its own.
+
+**4. Three symptoms, three layers.**
+
+(a) **Proxy buffering.** nginx is holding the response because it can't tell how long the next
+piece of the body is: either it speaks HTTP/1.0 to the server (its default before 1.29.7, or
+`proxy_http_version 1.0`), so the body is delimited by the server closing, or the server ends
+its body by closing. With `proxy_buffering on`, the events wait for a full buffer or the end,
+and `postpone_output` holds even the headers. A Go server answering nginx's HTTP/1.1 uses
+chunked coding and wasn't held in §8.6's measurements, so with a Go server this symptom points
+to an older nginx or an explicit 1.0. The fix is `X-Accel-Buffering: no` on the response, or
+`proxy_buffering off` for that location.
+
+(b) **The proxy's read timeout.** `proxy_read_timeout` counts the time between two reads from the
+server, 60 s by default. A two-minute step means no events, so after 60 s nginx closes the
+stream. The fix is a keep-alive comment after every 15 s or so of silence.
+
+(c) **Go's `WriteTimeout`.** It's a deadline on the whole response, counted from when the request
+was read. Thirty seconds after each connection starts, the next write fails and the server
+closes. The fix is `rc.SetWriteDeadline(time.Time{})` for the stream, or a deadline set before
+each write.
+
+(b) and (c) lose nothing because both cuts close the connection, which `EventSource` treats as a
+reason to reconnect, and it sends `Last-Event-ID`. The last event ID moves only when an event is
+complete, so a half-sent event is asked for again, and the server's log replays everything after
+the id.
+
+From the server side they look different. (b) happens only after 60 s of silence, never while
+events flow, and nginx logs `upstream timed out (110: Connection timed out) while reading
+upstream`. (c) happens 30 s after each connection began, busy or not; the handler's write fails
+with `i/o timeout`, and nginx logs `upstream prematurely closed connection while reading upstream`
+(both measured).
+
+Either turns into lost events or a dead view when the reconnect can't be served:
+
+- the server keeps no log, so events published during the gap are simply gone;
+- the log is capped and has dropped the requested events, and the server says nothing (the
+  Teacher's aside in §8.7);
+- the reconnect lands after the replay window and gets a snapshot (the state is right, but the
+  intermediate events are gone);
+- the reconnect lands on another process without the run's log (§8.4);
+- the reconnect meets a 502 or 504 during a deploy, and `EventSource` gives up for good.
+
+**5. A 64 KiB drop limit and a 3,000-step run.**
+
+On each connection the browser asks for the events after its last id, or for all of them on a
+fresh page, and the server writes the replay in one synchronous loop. Three thousand steps make
+thousands of events, hundreds of kilobytes even at 100 bytes each, all written in one turn of the
+event loop, before the kernel has taken any. `writableLength` passes 64 KiB part-way through, and
+the server destroys the response, and the queue goes with it, so nothing of the replay reaches
+the browser: in §8.7's measurement, a 1,000-event replay was cut before its first byte arrived.
+The browser sees a dropped connection, waits its reconnection time, and asks again with the same
+id, because no event got through to move it on. The replay is just as big, so the cycle
+repeats: the same browser every few seconds, and a live view that never loads.
+
+The tests passed because their runs were short. A replay of a few events is a few hundred bytes,
+and nothing trips a 64 KiB limit unless a single burst is that big.
+
+The cursor writes the replay through the same `pump` as live events, which stops when `write()`
+returns false and carries on at `'drain'`. However long the replay, no more than about one
+high-water mark (64 KiB in Node 24) plus one event is ever queued for the client; the rest of
+its backlog is just its position in the shared log. Measured: the cursor delivered all 1,000
+events to the late client, and held a client that never read at 65 KiB queued. The protection
+against a stuck client moves from a size limit, which can't tell a stuck client from a big
+replay, to a time limit, which can: `response.setTimeout` drops a client whose socket has taken
+nothing for so many seconds.
+
+**6. Two processes overlap during a deploy.**
+
+Under the default RollingUpdate strategy, `maxSurge` is 25%, rounded up, so a one-replica
+Deployment starts the new pod while the old one is still running R.
+
+1. **The new process starts.** Its sweep finds R marked `running` and marks it failed,
+   `interrupted`. It has no event log for R and knows nothing of its progress.
+2. **The old process finishes R** a few seconds later, and its writer saves `crm`'s result and the
+   run's `succeeded`. One of two things happens. An unconditional update flips the record back to
+   succeeded, after whatever reacted to the failure (an alert, an operator, an automatic retry)
+   has reacted. A retry here is a re-run, so the CRM gets a second summary
+   ([file 04 §4.3](04-retries-idempotency-and-durability.md#43-retrying-a-post-safely-idempotency-key)).
+   A conditional update, `WHERE status = 'running'`, matches nothing, and the record says R failed
+   though it succeeded.
+3. **Browser 1** stays on the old process and sees every step succeed, then the run.
+4. **Browser 2** reconnects and lands on the new process. With no log for R, the new process sends
+   the final state from the database: failed, interrupted.
+
+Two browsers show opposite outcomes for the same run. `Last-Event-ID` can't help the second,
+because the id names a position in a log that exists only in the old process's memory. The new
+process has no events to replay, and if it had, its ids would be numbered on their own (§8.4).
+
+Two ways out:
+
+- **Never overlap.** Use the Recreate strategy, which kills the old pods before creating new
+  ones. The cost is downtime on every deploy: in-flight runs are interrupted, request-style
+  callers get errors, and live views drop. And Recreate's own documentation warns that a pod
+  deleted by hand is replaced at once, even while the old one is still terminating.
+- **Leases.** Give every run an owner and a heartbeat, have the sweep fail only runs whose
+  owner's heartbeat has gone stale, and let the old process drain: stop taking new runs, finish
+  the ones it has, keep heartbeating until it exits (go-services file 03's graceful shutdown).
+  The costs are a heartbeat write per run per interval, a staleness threshold that trades
+  detection speed against false alarms, and browser 2's problem, which leases don't solve on
+  their own: the new process must either serve R's progress from the record, polling the database
+  for a run it doesn't own, or send the browser to the owner.
+
+---
+
+## File 09 — Joins: a step with more than one way in
+
+**1. An inactive user, and `prefs` answers `400`.**
+
+Take the edges one at a time. `user → orders` carries the condition `active`, which is false, so
+`orders` is skipped, and a skipped parent makes its edges not taken: `orders → crm` is not taken.
+`prefs` answered, so it succeeded, but its edge into `crm` leaves on `2xx`, so it's not taken
+either. Its `400` edge into `fallback` is taken, `fallback` runs and succeeds, and
+`fallback → crm` is taken. So the outcomes are not taken, not taken, taken, and nothing is
+broken.
+
+- "all": a required edge wasn't taken, so `skipped`.
+- "none": nothing broken and one edge taken, so ready.
+- "orders": the one required edge wasn't taken, so `skipped`.
+
+Under "none", `crm` runs over a document holding `user`, `prefs` with its `400` and error body,
+and `fallback`. File 01's mapping counts the orders of a step that isn't there, which gives `0`,
+and finds no `channel` in `prefs`'s error body, so the key goes: jsonata 2.2.2 gave
+`{"customerId":"u-42","orderCount":0}`. §9.6's mapping checks `prefs`'s status and takes the
+fallback's channel: `{"customerId":"u-42","orderCount":0,"channel":"post"}`. Both create a
+customer with no orders. The better mapping fixed the channel and nothing else, because no
+mapping can make up for a step that shouldn't have run. That's the gate's job, the "orders"
+column.
+
+**2. A parallel split merged by an exclusive gateway.**
+
+`T` runs twice. Both branches run, so two tokens reach the exclusive gateway, and merging, it
+passes each one straight through: "Each token arriving at any incoming Sequence Flows activates
+the gateway" (BPMN 2.0.2, Table 13.2), "without synchronization" (§10.6.2). Two activations put
+two tokens on the outgoing flow, and `T` runs once for each. That's the behaviour the patterns
+call Multi-Merge (WCP-8), which BPMN's table lists for this gateway. The model almost certainly
+wanted a parallel gateway there.
+
+File 02's scheduler can't do this because it doesn't move tokens. A step is decided once, at the
+moment its count of unresolved parents reaches zero, and started at most once. A join after both
+branches waits for both edges, sees two taken, and runs once under any rule that lets it run. So
+in this scheduler the XOR merge and the OR-join are one rule: wait for every edge's outcome, then
+run if one was taken. The XOR merge's advantage in a token engine, not waiting, buys nothing
+here, because a branch that isn't taken reports "not taken" by cascade as soon as the branching
+step resolves. The join never waits for a branch that isn't running.
+
+**3. Firing on the first taken edge.**
+
+What changes is which parents have finished when `crm` starts. With file 01 §1.5's invented
+timings, `prefs` finishes at 200 ms and `orders` at 420 ms, so `crm` would start at 200 ms with
+`orders` still in flight, and `docFor` gives only finished ancestors: no `orders`. On a day when
+`orders` is faster, it would be there. Same input, same responses, different document, and so a
+different request. That's what 01 §1.5's second rule exists to prevent: limiting each step to its
+finished ancestors "makes what it sees independent of scheduling", but only if the step starts
+after all of them have finished.
+
+When the second edge is taken later, the scheduler has two choices. It can run `crm` again,
+which posts a second summary to the CRM: the multi-merge of question 2. Or it can ignore the
+late edge, which is the discriminator, WCP-9: "Subsequent enablements of incoming branches do not
+result in the thread of control being passed on." Then `crm`'s request lacks whatever came late,
+for good. Either way, §9.4's analysis stops describing `crm`'s document, because its facts are
+about which edges were taken by the time the join decided, and that now depends on timing.
+Required edges stop meaning anything too, unless first-come waits for them, at which point it's
+a join condition again.
+
+**4. Every edge required.**
+
+The analysis reports `crm never runs: its required edges disagree about prefs`. `prefs`'s edge
+says `prefs` answered `2xx`; `fallback`'s says `fallback` ran, so `prefs` answered `400`; the
+intersection is empty. The scheduler agrees on every run. If `prefs` answers `2xx`, `fallback` is
+skipped, its edge isn't taken, and `crm` is skipped. If `prefs` answers `400`, `prefs`'s edge isn't
+taken, and `crm` is skipped. If `fallback` fails, `crm` is `upstream_failed`. It never runs.
+
+The author meant `$orders and ($prefs or $fallback)`. Required edges can't say that. They give the
+conjunction of the required edges, or, with none required, the disjunction of all of them, and an
+`or` over some edges inside an `and` is neither.
+
+Graph A's rule, only `orders` required, is equivalent here. Whenever `orders`'s edge is taken,
+`user` answered `2xx`, so `prefs` ran. If it answered `2xx`, its edge into `crm` was taken. If it
+answered `400`, `fallback` ran and either succeeded, taking its edge, or failed, making `crm`
+`upstream_failed`. If `prefs` failed, its broken edge makes `crm` `upstream_failed`. So in every
+run in which `crm` runs, one of the two edges was taken, and the author's condition holds without
+being stated.
+
+The analysis doesn't know that. It keeps one set per step, `prefs: 2xx, 400` and
+`fallback: 2xx, missing`, and "one of these two edges was taken" is a relation between two steps,
+which no pair of sets can express. So it allows `prefs` answering `400` with `fallback` missing,
+which never happens, and the mapping is still asked to cope with it. A general join condition
+would let the author say it, at the price of the `or` handling §9.7 describes.
+
+**5. Why the second pass misses `notify`.**
+
+The second pass walks `crm`'s ancestors in order and drops "didn't run" for any step whose
+required edges, and at least one edge, are certainly taken; an edge is certainly taken when it has
+no condition and its step's set is exactly the edge's answer. `user` has no edges, so it ran.
+`prefs` has one edge, from `user` on `2xx`, and `user`'s set is `{2xx}`, so it's certainly taken
+and `prefs` ran, with its set still `{2xx, 400}`. `notify` has edges from `prefs` on `2xx` and on
+`400`. `prefs`'s set is neither `{2xx}` nor `{400}`, so neither edge is certainly taken, and
+`notify` keeps "missing".
+
+An exact method splits on `prefs`'s answer: in the runs where it answered `2xx` the first edge was
+taken, in those where it answered `400` the second, and in both `notify` ran. That's reasoning by
+cases, and the cases multiply: with *k* steps of two answers each that bear on a join, up to
+2<sup>*k*</sup> combinations. §9.5's construction shows the general question is as hard as
+satisfiability, so no known exact method avoids that growth in the worst case.
+
+A cheaper rule catches `notify`: a step with no required edges in, and an unconditioned edge from
+every answer that some certainly-run parent may have given, certainly ran. Here `prefs` certainly
+ran, its set is `{2xx, 400}`, and `notify` has an edge from each. I added that rule to the Go
+analysis and reran §9.4's brute-force check: still sound on all 20,000 random workflows, B now
+prints `notify  2xx`, and the false "missing" fell from 465 pairs to 160. It's still not exact. It
+misses a step whose covering edges come from two different parents, for instance. Practical
+analyses are a ladder of rules like this, each checked against brute force.
+
+**6. Two OR-joins in a loop.**
+
+The scheduler: validation comes first, and Kahn's algorithm (02 §2.1) can't place `j1` or `j2`,
+because each waits for the other, so it reports both as on a cycle. Skip validation, and you get
+02's scenario H. `start` runs and its edges to `j1` and `j2` are taken. Then each join is still
+waiting for its edge from the other, whose parent can't be decided until it has heard from the
+first. Nothing is running and nothing is ready, so the loop ends with both `pending`. Dead-path
+elimination can't help, because "not taken" comes only from a step that has been decided, and
+neither has.
+
+BPMN's rule, by my reading of Table 13.3 (my reading, not an example the standard gives): `j1`
+has a token on its edge from `start` and none on its edge from `j2`. The token on `start`'s edge
+to `j2` can reach `j1`'s empty edge, through `j2`, without visiting `j1`. For `j1` to fire, that
+token must also be able to reach an edge of `j1` that holds a token, again without visiting `j1`.
+The only such edge comes from `start`, and nothing leads back to `start`, so `j1` isn't activated.
+By symmetry neither is `j2`, and both wait for ever. That's the "stuck" answer, the one the 2002
+paper says the fixed-point semantics it examined gives: "the process folders are stuck at f1 and
+f2".
+
+Why no rule can be right: the informal meaning gives both answers. If neither join fires, nothing
+will ever arrive on its other edge, so by the meaning of an OR-join each should fire. If both
+fire, something will arrive, so each should have waited. "Both alternatives result in a
+contradiction to the informal semantics of EPCs." Any rule has to pick one, and contradicts the
+meaning either way. BPEL forbids cycles among links ([SA00072]) and keeps repetition in loops that
+links can't cross ([SA00070]), and MQSeries Workflow "only allows for the iteration of entire
+subprocesses, i. e., cycles are not allowed in the workflow graph". Both keep the OR-join local by
+never letting the question arise. YAWL picks an answer instead, treating other OR-joins as XOR- or
+AND-joins while deciding one, and pays for it with a state-space analysis.
+
+---
+
 ## Things to try
 
 - Run one expression through two JSONata implementations you have to hand and diff the outputs.
@@ -838,6 +1194,20 @@ model in it again.
 - Write `dry_run_draft` against a local fake upstream: send the GETs, render the POST. Then make
   one fake GET increment a counter, declare that step as having side effects, and check that the
   dry-run refuses to send it.
+- Put nginx in front of file 08's Go server with `proxy_http_version 1.0;`, take out its
+  `X-Accel-Buffering` header, and watch all five events arrive at once. Then put the header back.
+- Point a real browser's `EventSource` at file 08's Go server behind nginx, stop the server
+  mid-run, and check whether the browser gives up at the 502 the way undici's `EventSource` did.
+  I tested only undici, not a browser.
+- Make file 08's stand-in database fail every third save, and decide what the run record should
+  then say about itself.
+- Give file 08's Node cursor a `response.setTimeout`, connect a client that never reads, and time
+  the drop. Then do the same with a Go per-write deadline and compare where each one's backlog sat.
+- Write a brute-force checker for file 09's analysis: enumerate every answer and every condition's
+  truth value, apply §9.3's rule, and compare with the analysis on random workflows. Then add the
+  covering rule from file 09's answer 5 and watch the false "missing" fall.
+- Build file 09 §9.5's satisfiability workflow for a few small formulas, and find the smallest
+  unsatisfiable one the analysis lets through.
 
 ## Questions worth asking me
 
@@ -882,3 +1252,13 @@ model in it again.
   exactly is the supervision?"
 - "Our validator stops at the first error. Rewrite it to return RFC 9457 errors with pointers, and
   show the agent's repair loop on this broken draft."
+- "Here's our run record's schema and a sample row. What in it could still be a secret, and what
+  isn't capped?"
+- "Here's the path from the browser to our engine. Which hop buffers or times out an event
+  stream, and what does each one need from us?"
+- "Our deploys briefly run two engine processes. Walk a run through one and tell me what the
+  record and the live view each say."
+- "Here's our workflow. Which joins can never run, which edges are dead, and what may each join's
+  mapping find missing?"
+- "We'd like loops in our workflows. What happens to our joins, and whose answer to the OR-join
+  should we copy?"

@@ -774,6 +774,57 @@ evaluator: cap the size of the data document, and evaluate in a process with a h
 limit (a container or cgroup limit, or a worker you can kill), so the thing the kernel kills is
 the evaluator and not the engine.
 
+### Sizing the sequence limit
+
+The table invites an easy fix: a limit of 1,000,000 let gnata reach 5.5 GB, so set a lower one
+and memory falls with it. I tried that in gnata v0.6.2 (Go 1.27.0, Apple M4 Pro, same
+measurement), and memory doesn't fall, because of *when* the limit is checked. With a limit of
+10,000 and a 500 ms timeout:
+
+| Expression | Peak memory | Stopped by |
+|---|---|---|
+| `$count([1..1000].([1..1000]))` | 71 MB | `D2015` after 29 ms |
+| `$count([1..3000].([1..3000]))` | 510 MB | `D2015` after 222 ms |
+| `$count([1..10000].([1..10000]))` | 1.36 GB | `D1012`, the timeout, after 641 ms |
+| the same, with a 5 s timeout | 4.8 GB | `D2015` after 2.9 s |
+
+Each inner range is within the limit. The outer step's result isn't, but the error arrives only
+once that result exists: a million items cost 71 MB before the check, nine million cost 510 MB,
+and a hundred million outran the timeout. Only a limit below the range itself stops it at once.
+At 1,000, `[1..10000]` fails as it's built, with a 6 MB peak.
+
+A limit that low has its own cost. gnata's documentation of `WithSequence` says "a path step
+mapping over input data counts too, so a.b over more than n items of a exceeds it." Against a
+9.4 MiB document whose `steps.orders.body.items` holds 100,000 order lines:
+
+| Mapping | Limit 10,000 | Limit 100,000 |
+|---|---|---|
+| `$count(steps.orders.body.items)` | 8 ms | 7 ms, 26 MB |
+| `$sum(steps.orders.body.items.(price * qty))` | `D2015` | 53 ms, 105 MB |
+| `$count(steps.orders.body.items[price > 40])` | `D2015` | 42 ms, 87 MB |
+| `$count(steps.orders.body.items^(>price))` | `D2015` | 204 ms, 86 MB |
+
+The first passes under both limits because, by the same documentation, a last step returning an
+array stored in the data is exempt. The other three are ordinary mappings, and a limit of 10,000
+breaks them.
+
+Some growth isn't a sequence at all. This doubles a string forty times, in forty calls, well
+inside a stack limit of 100:
+
+```
+($f := function($s, $n) { $n = 0 ? $s : $f($s & $s, $n - 1) }; $length($f("x", 40)))
+```
+
+With a limit of 100,000, a 100 ms timeout stopped it at 148 ms with a 2.06 GB peak, and a
+500 ms timeout stopped it at 1.34 s with 5.03 GB. That second overrun is the case gnata's
+documentation warns about: concatenating two gigabyte strings is one builtin call, and it isn't
+interrupted. Some builtins carry caps of their own, though. gnata refused `$pad("", 500000000)`
+at once with `D3010`, "width argument exceeds maximum of 10000".
+
+So the sequence limit is a bound on the data you accept, not on memory. Size it from your
+input cap: 100,000 suits a 10 MiB response of small records. I didn't repeat these runs on the
+other three implementations, so whether they check as late is open.
+
 ## 3.7 ReDoS, and why RE2 removes it
 
 A regular expression engine that **backtracks** tries one way of matching, and on failure goes
@@ -946,4 +997,4 @@ AI agent.
    the customer's record, and how would you change the data document and the mapping so a retry
    sends the same bytes?
 
-(Answers in [09-exercises.md](09-exercises.md).)
+(Answers in [11-exercises.md](11-exercises.md).)

@@ -1900,4 +1900,4 @@ Each gap is real, and most are other chapters' subjects:
    wrong in production without it, one involving the caller and one involving upstream side
    effects.
 
-(Answers in [09-exercises.md](09-exercises.md).)
+(Answers in [11-exercises.md](11-exercises.md).)

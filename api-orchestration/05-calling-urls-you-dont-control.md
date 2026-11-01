@@ -787,10 +787,235 @@ Two more layers worth naming:
 - Everything here concerns IP destinations. A workflow that can read files, run templates
   that reach a filesystem, or trigger other steps has other inside-reach paths that an
   egress IP check never sees.
+  - One that's easy to miss is a document format that can refer to other documents.
+    santhosh-tekuri/jsonschema v6.0.3, a Go JSON Schema validator, starts every compiler
+    with a file loader (`loader: FileLoader{}` in its `roots.go`). So a workflow's input
+    schema containing `{"$ref": "file:///etc/passwd"}` would make the server read that
+    file while compiling it. `Compiler.UseLoader(nil)` leaves only the metaschemas the
+    library bundles, and every other reference fails with "no URLLoader set".
+  - XML's external entities are the older form of the same hole. For any format a user
+    writes, check what its references fetch by default.
 
 The guard closes the biggest, cheapest hole — the engine being turned into a window onto
 your own network. It is necessary and it is not sufficient, which is why it's one layer of
 several.
+
+## 5.11 When part of the URL comes from data
+
+Everything so far assumed the attacker picks the destination. A commoner shape fixes the host
+and fills the *path* from data: a workflow calls
+`https://api.example.com/v1/users/{{ input.user_id }}/orders`, and `user_id` comes from
+whoever started the run. No private address is involved, so §5.5's guard has nothing to say.
+Yet if the value can change the URL's shape, the caller picks which of the upstream's
+endpoints the engine calls, with the engine's credentials.
+
+PortSwigger calls this **server-side parameter pollution**: it "occurs when a website embeds
+user input in a server-side request to an internal API without adequate encoding"
+([Web Security Academy](https://portswigger.net/web-security/api-testing/server-side-parameter-pollution)).
+Their example sends `peter/../admin` as a user name: "If the server-side client or back-end
+API normalize this path, it may be resolved to `/api/private/users/admin`."
+
+Three rules keep a value in its place, and the third is the one that escaping alone gets
+wrong.
+
+**1. Fix the scheme, host and port before any value goes in.** A value spliced in before the
+path can send the request somewhere else entirely. Here's how Go's `url.Parse` read
+`https://api.example.com` + value + `/v1/users`:
+
+| Value | Host it parsed | |
+|---|---|---|
+| `.evil.example` | `api.example.com.evil.example` | a different host |
+| `@evil.example` | `evil.example` | `api.example.com` became a user name |
+| `:8080` | `api.example.com:8080` | a different port |
+
+So a template may hold placeholders only after the `/` or `?` that ends the authority. Check
+that when the workflow is saved, not when it runs.
+
+**2. Escape for the position.** A value in the path is one segment, and a value in the query
+is one value. Escapers disagree about what they leave alone. Of the printable ASCII
+characters that aren't letters or digits, Go 1.27's `url.PathEscape` left `$&+-.:=@_~` and
+`url.QueryEscape` left `-._~`. JavaScript's `encodeURIComponent` leaves `!'()*` as well;
+[MDN's page](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/encodeURIComponent#encoding_for_rfc3986)
+gives an `encodeRFC3986URIComponent` that escapes those five too. Leaving a sub-delimiter is legal, since a path segment may
+contain them ([RFC 3986 §3.3](https://www.rfc-editor.org/rfc/rfc3986#section-3.3)), but
+whether the upstream gives one of them a meaning isn't something the engine can know.
+Escaping every byte outside the unreserved set
+([§2.3](https://www.rfc-editor.org/rfc/rfc3986#section-2.3)) costs nothing and removes the
+question. One trap: `url.QueryEscape` writes a space as `+`, which is right in a query
+string and wrong in a path, where `+` is a plus.
+
+**3. Refuse what escaping can't hold.** Two kinds of value come out of any escaper still
+able to move the request:
+
+- **`.`, `..` and the empty string.** Dots are unreserved, so no escaper touches them.
+  Servers resolve dot segments
+  ([RFC 3986 §5.2.4](https://www.rfc-editor.org/rfc/rfc3986#section-5.2.4)) and often
+  merge the double slash an empty value leaves.
+- **A slash, even escaped.** `%2F` is data only until something decodes it before
+  resolving dot segments, and a common proxy does exactly that.
+
+I sent the same paths to two servers:
+- Go 1.27's `ServeMux`, with routes for `/v1/users/{id}/orders`, `/v1/admin/orders` and
+  `/v1/users/orders`;
+- nginx 1.27.5 proxying to a backend that echoed the path it received, once with
+  `proxy_pass http://backend/v1/;` (a URI part) and once with `proxy_pass http://backend;`
+  (none).
+
+| Request path | Go `ServeMux` | nginx, URI part | nginx, no URI part |
+|---|---|---|---|
+| `/v1/users/7/orders` | the user's orders | `/v1/users/7/orders` | unchanged |
+| `/v1/users/..%2Fadmin/orders` | the user's orders, with `id` = `../admin` | **`/v1/admin/orders`** | unchanged |
+| `/v1/users/%2E%2E/admin/orders` | 404 | **`/v1/admin/orders`** | unchanged |
+| `/v1/users/../admin/orders` | **redirected to `/v1/admin/orders`** | **`/v1/admin/orders`** | unchanged |
+| `/v1/users//orders` | **redirected to `/v1/users/orders`** | **`/v1/users/orders`** | unchanged |
+| `/v1/users/./orders` | **redirected to `/v1/users/orders`** | **`/v1/users/orders`** | unchanged |
+
+Both servers did what their documentation says:
+- **Go's `ServeMux`** "takes care of sanitizing the URL request path …, redirecting any
+  request containing . or .. segments or repeated slashes to an equivalent, cleaner URL.
+  Escaped path elements such as "%2e" for "." and "%2f" for "/" are preserved and aren't
+  considered separators for request routing"
+  ([net/http](https://pkg.go.dev/net/http#ServeMux)).
+- **nginx with a URI part** on `proxy_pass` replaces "the part of a normalized request URI
+  matching the location"
+  ([proxy_pass](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_pass)).
+  Normalizing happens "after decoding the text encoded in the “%XX” form, resolving
+  references to relative path components “.” and “..”, and possible compression of two or
+  more adjacent slashes into a single slash"
+  ([location](https://nginx.org/en/docs/http/ngx_http_core_module.html#location)).
+- **nginx without a URI part** passes the request URI "in the same form as sent by a
+  client".
+
+> ⚠️ **Escaping is a promise about how one parser reads the URL.** Every proxy that decodes
+> and rebuilds it can break the promise, and the engine can't see what stands behind an
+> upstream's hostname. The same escaped value was harmless to Go's mux and a traversal
+> through nginx.
+
+So refuse. A path value that's empty, `.` or `..`, or that holds `/` or `\`, fails the
+step. Backslash is included because some servers treat it as a separator too; I didn't test
+one here. The rule has a cost: a parameter that legitimately spans segments, such as a file
+path in a repository API, can't use a one-segment placeholder. RFC 6570 URI templates give
+that case its own operator, `{+var}` ("Reserved Expansion",
+[§3.2.3](https://www.rfc-editor.org/rfc/rfc6570#section-3.2.3)), which lets reserved
+characters such as `/` through. An engine offering it must still refuse dot segments.
+
+```go
+// pathSegment escapes v as one path segment. It refuses values that no
+// escaping keeps one segment: dots are unreserved, so "." and ".." come out
+// of any escaper unchanged, and a proxy that decodes %2F before resolving dot
+// segments turns an escaped slash back into a separator.
+func pathSegment(v string) (string, error) {
+	if v == "" || v == "." || v == ".." || strings.ContainsAny(v, `/\`) {
+		return "", fmt.Errorf("[%s] can't be one path segment", v)
+	}
+	// QueryEscape escapes everything but the unreserved characters. In a
+	// query a space becomes +, which a path reads as a plus, so swap in %20.
+	return strings.ReplaceAll(url.QueryEscape(v), "+", "%20"), nil
+}
+```
+
+For a query value, `url.QueryEscape(v)` alone is right. I ran `pathSegment` with Go 1.27.0
+over eleven values; the driver, which prints `/v1/users/<segment>/orders` or `refused`, is
+left out:
+
+```
+[7]           /v1/users/7/orders
+[café]        /v1/users/caf%C3%A9/orders
+[a b;c=d+e]   /v1/users/a%20b%3Bc%3Dd%2Be/orders
+[v1.2..3]     /v1/users/v1.2..3/orders
+[..%2Fadmin]  /v1/users/..%252Fadmin/orders
+[]            refused
+[.]           refused
+[..]          refused
+[../admin]    refused
+[7/delete]    refused
+[..\admin]    refused
+```
+
+Dots inside a value are fine (`v1.2..3`); only a whole segment of them moves anything. A
+value that arrives already escaped (`..%2Fadmin`) has its `%` escaped in turn, so one round
+of decoding gives back the text the caller sent, still inside one segment. The other three
+languages print an identical table.
+
+<details><summary>Rust</summary>
+
+No crate needed. Run with rustc 1.96.
+
+```rust
+/// Escapes v as one path segment, or refuses it (see the Go version).
+fn path_segment(v: &str) -> Result<String, String> {
+    if v.is_empty() || v == "." || v == ".." || v.contains('/') || v.contains('\\') {
+        return Err(format!("[{v}] can't be one path segment"));
+    }
+    let mut out = String::new();
+    for b in v.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            out.push(b as char); // unreserved (RFC 3986 §2.3)
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    Ok(out)
+}
+```
+
+</details>
+
+<details><summary>C++</summary>
+
+C++20, built with Apple clang 17 and `-Wall -Wextra`, no warnings. The standard library has
+no URL escaper, so the loop is the whole thing.
+
+```cpp
+#include <optional>
+#include <string>
+
+// Escapes v as one path segment, or refuses it (see the Go version).
+std::optional<std::string> path_segment(const std::string& v) {
+    if (v.empty() || v == "." || v == ".." || v.find_first_of("/\\") != std::string::npos) {
+        return std::nullopt;
+    }
+    static const char hex[] = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char b : v) {
+        bool unreserved = (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+                          (b >= '0' && b <= '9') || b == '-' || b == '.' || b == '_' || b == '~';
+        if (unreserved) {
+            out += static_cast<char>(b);
+        } else {
+            out += '%';
+            out += hex[b >> 4];
+            out += hex[b & 0xF];
+        }
+    }
+    return out;
+}
+```
+
+The driver's column padding counts UTF-8 code points by hand. `printf`'s `%-13s` counts
+bytes, so its first attempt printed `[café]` one column short.
+
+</details>
+
+<details><summary>JavaScript</summary>
+
+Run with Node 24.14.1.
+
+```js
+// Escapes v as one path segment, or refuses it (see the Go version).
+function pathSegment(v) {
+  if (v === "" || v === "." || v === ".." || /[/\\]/.test(v)) {
+    throw new Error(`[${v}] can't be one path segment`);
+  }
+  // encodeURIComponent leaves !'()* alone as well as the unreserved
+  // characters, so escape those five too, as MDN's encodeRFC3986URIComponent does.
+  return encodeURIComponent(v).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+}
+```
+
+`encodeURIComponent` writes a space as `%20`, so unlike Go's `QueryEscape` it needs no swap.
+
+</details>
 
 ## Check yourself
 
@@ -807,12 +1032,14 @@ several.
 4. The Rust guard validates every resolved address in a custom `Resolve` and still lets a
    request reach `127.0.0.1`. Two different inputs trigger this — one with no redirect, one
    with. Explain the mechanism in each case and the two changes that close them.
-5. A teammate adds an egress allow-list keyed on the *hostname* in the request and says
-   "metadata is blocked now, `169.254.169.254` isn't in the list." Why is that not enough,
-   and what does Smokescreen's own warning about its hostname ACL tell you to do instead?
-6. Your engine lets workflow authors set arbitrary request headers, and you run on AWS with
+5. Your engine lets workflow authors set arbitrary request headers, and you run on AWS with
    IMDSv2 enabled. Someone argues the dial-time IP guard is now redundant because IMDSv2
    "protects against SSRF." Where is the gap, and which of the two controls actually stops a
    request to `169.254.169.254` in this setup?
+6. A workflow calls `https://api.example.com/v1/accounts/{{ input.id }}/statement`, escaping
+   `id` with `url.PathEscape`. The upstream sits behind nginx with
+   `location /v1/ { proxy_pass http://app/v1/; }`. Give an `id` that fetches a different
+   resource, say what nginx forwards and why, and explain why escaping more characters
+   wouldn't have helped.
 
-(Answers in [09-exercises.md](09-exercises.md).)
+(Answers in [11-exercises.md](11-exercises.md).)

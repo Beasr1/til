@@ -612,6 +612,54 @@ with OpenAPI 3.0's null rule.
 > test it with requests the description forbids, and don't assume the validator and the
 > generators read the description the same way.
 
+### Who calls whom in the generated server
+
+The generated Go file declares two interfaces, and their names make it easy to get the direction
+wrong. `ServerInterface` has one method per operation with the plain handler shape, `(w, r)`.
+`StrictServerInterface` has one method per operation that takes a typed request and returns a
+typed response. You implement only the strict one; the generated code adapts it to the plain one.
+For a health check, a request passes through four layers, three of them generated
+(oapi-codegen v2.8.0, `std-http-server` and `strict-server`):
+
+```
+GET /healthz
+ → http.ServeMux                      pattern "GET /healthz", registered by the generated HandlerWithOptions
+ → ServerInterfaceWrapper.GetHealthz  runs the per-route net/http middlewares
+ → strictHandler.GetHealthz           builds the typed request object, runs the strict middlewares
+ → yourType.GetHealthz(ctx, req)      your code: returns a typed response or an error
+ ← GetHealthz200JSONResponse.VisitGetHealthzResponse(w)
+                                      generated: writes the status, Content-Type and JSON body
+```
+
+Why does the interface live in the *generated* package, when the code you write is the one doing
+the work? Because of a Go convention: "Go interfaces generally belong in the package that uses
+values of the interface type, not the package that implements those values" ([Go Code Review
+Comments](https://go.dev/wiki/CodeReviewComments#interfaces)). The generated router is the
+package that *uses* it: `strictHandler` holds a `StrictServerInterface` and calls its methods.
+Your package implements it. So the interface in `gen` isn't a framework imposing itself; it's the
+consumer declaring what it needs, as the convention says.
+
+The payoff is a compile error at the right moment. Adding an operation to the description and
+regenerating adds a method to `StrictServerInterface`, and the build stops until the method
+exists. Adding a `GET /version` operation, regenerating and building gave:
+
+```
+cannot use api{} (value of struct type api) as gen.StrictServerInterface value in argument to
+gen.NewStrictHandler: api does not implement gen.StrictServerInterface (missing method GetVersion)
+```
+
+The reverse holds as well. Routes are registered only by generated code, so an endpoint can't be
+served without being described.
+
+gRPC takes the opposite position on that first point. grpc-go's generator, by default, makes your
+server type embed `Unimplemented<ServiceName>Server` "for future compatibility": a newly added
+RPC compiles, and callers get an "unimplemented" error at run time until someone writes it
+([protoc-gen-go-grpc](https://github.com/grpc/grpc-go/tree/master/cmd/protoc-gen-go-grpc)).
+Turning that off is "not recommended". The two choices suit different repositories. When server
+and description live in one repository and change together, a build failure is the earliest
+warning there is. When a published `.proto` is shared by many servers that upgrade at different
+times, a compile break in every one of them is the wrong default.
+
 ### Where the two sides read one description differently
 
 Three disagreements turned up in this one-endpoint example, each from a single line of the
@@ -1300,19 +1348,21 @@ operational transforms or CRDTs, which is outside this course.
 1. The backend team renames a JSON field in a Go struct, code-first. The editor, generated
    from last week's description, keeps sending the old name. What does the Go server do with
    that field, and which check would have caught the change before it shipped?
-2. What does `/a~01b` resolve to in `{"a~1b": 1, "a/b": 2}`? What does an implementation that
-   decodes `~0` first return, and why is that worse than an error?
-3. An editor sends `[{"op": "remove", "path": "/steps/1"}]` with no `If-Match`, a second
+2. An editor sends `[{"op": "remove", "path": "/steps/1"}]` with no `If-Match`, a second
    after another editor inserted a step at index 0. Which step is removed? Give two fixes, one
    using HTTP and one using JSON Patch itself.
-4. The server answers a JSON Patch request with `422` and an `errors` entry whose pointer is
+3. The server answers a JSON Patch request with `422` and an `errors` entry whose pointer is
    `/steps/2/request/url`. The editor resolves it against the patch it sent and highlights
    nothing. What went wrong, and what should the description have said?
-5. CI regenerates both sides and runs `git diff --exit-code`. A developer changes the
+4. CI regenerates both sides and runs `git diff --exit-code`. A developer changes the
    description so that a generator writes an extra file, commits only the description, and CI
    passes. How can that be, and how do you fix the check?
-6. An editor's `PATCH` with `If-Match: "7"` times out, and the client retries with the same
+5. An editor's `PATCH` with `If-Match: "7"` times out, and the client retries with the same
    header and gets `412`. The first attempt had succeeded. Explain what happened, what RFC 9110
    allows the server to do instead, and when the server shouldn't.
+6. A teammate adds `DELETE /workflows/{id}` to the description, runs the generator, and the
+   build fails in a file they never opened. Which file, and why there? What would a gRPC
+   service generated with grpc-go's defaults have done instead, and when is that the better
+   behaviour?
 
-(Answers in [09-exercises.md](09-exercises.md).)
+(Answers in [11-exercises.md](11-exercises.md).)
