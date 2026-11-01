@@ -175,7 +175,7 @@ flowchart LR
 | Course | One line | Start at |
 |---|---|---|
 | [android](android/README.md) | How an Android app is isolated, signed, booted and attested, and how each defence is attacked | `01-the-android-platform` |
-| [api-orchestration](api-orchestration/README.md) | Engines that chain API calls: graphs, data between steps, retries, SSRF, API contracts, and agents that build workflows | `01-foundations` |
+| [api-orchestration](api-orchestration/README.md) | Engines that chain API calls: graphs and joins, data between steps, retries, SSRF, API contracts, recording runs and following them live, and agents that build workflows | `01-foundations` |
 | [clickhouse](clickhouse/README.md) | What ClickHouse does with the rows an application sends it | `01-what-clickhouse-does-with-a-table` |
 | [css](css/README.md) | Stateful, animated UI with little or no JavaScript | `01-foundations` |
 | [docker](docker/README.md) | The build cache, and how it ships broken images silently | `01-images-and-layers` |
@@ -184,7 +184,7 @@ flowchart LR
 | [firmware-update](firmware-update/README.md) | Replacing the code inside a USB device, and proving it worked | `01-why-firmware-updates-are-hard` |
 | [git](git/README.md) | Rebasing, force-pushing and commit identity without losing work | `01-what-a-commit-is` |
 | [go-services](go-services/README.md) | The parts of a Go service that fail slowly in production | `01-how-a-go-service-runs` |
-| [http](http/README.md) | What HTTP is and rides on, framing, version negotiation, QUIC, TLS trust, origins and CORS | `01-foundations` |
+| [http](http/README.md) | What HTTP is and rides on, framing, version negotiation, QUIC, TLS trust, origins and CORS, browser sessions, and caching and revalidation | `01-foundations` |
 | [interview](interview/README.md) | Interview preparation as learning: dsa, cs-fundamentals, system-design | `01-how-the-loop-works` |
 | [kafka](kafka/README.md) | What Kafka actually promises an application | `01-what-kafka-is` |
 | [peer-to-peer](peer-to-peer/README.md) | Connecting two machines directly when both sit behind NATs and firewalls | `01-foundations` |
