@@ -41,6 +41,7 @@ running it, rather than what its name suggests.
 | [`net/http` Server](https://pkg.go.dev/net/http#Server) | What each timeout bounds, `Shutdown`, `TimeoutHandler` |
 | [`net/http` ServeMux](https://pkg.go.dev/net/http#ServeMux) / [Routing Enhancements for Go 1.22](https://go.dev/blog/routing-enhancements) | Method and wildcard patterns, precedence and conflicts, 405s, trailing-slash redirects, `httpmuxgo121` |
 | [`context`](https://pkg.go.dev/context) | Cancellation, deadlines, `WithoutCancel` (Go 1.21) |
+| [nginx `proxy_ignore_client_abort`](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_ignore_client_abort) and [`ngx_http_request.h`](https://github.com/nginx/nginx/blob/release-1.30.6/src/http/ngx_http_request.h#L132-L138) | Whether a client's abort reaches a server behind nginx, and where status 499 comes from |
 | [`time.LoadLocation`](https://pkg.go.dev/time#LoadLocation) and [`time/tzdata`](https://pkg.go.dev/time/tzdata) | Where zone data comes from, and embedding it |
 | [IANA tz database](https://github.com/eggert/tz) | Whether a zone has daylight saving |
 | [Go toolchains](https://go.dev/doc/toolchain) / [release policy](https://go.dev/doc/devel/release#policy) | The `go` line as a minimum, `GOTOOLCHAIN`, support windows |
@@ -68,7 +69,7 @@ running it, rather than what its name suggests.
 | # | File | After this you can… |
 |---|------|---------------------|
 | 2 | [The HTTP client](02-the-http-client.md) | ⭐ Spot a per-request Transport, and build a client that pools, times out and proxies correctly |
-| 3 | [The HTTP server](03-the-http-server.md) | Say what each server timeout bounds, put a real deadline on handler work, shut down without dropping requests, and keep dependencies out of liveness probes |
+| 3 | [The HTTP server](03-the-http-server.md) | Say what each server timeout bounds, put a real deadline on handler work, tell a client that went away from a real failure, shut down without dropping requests, and keep dependencies out of liveness probes |
 | 4 | [Deadlines and retries](04-deadlines-and-retries.md) | ⭐ Make a retry budget fit inside a request's deadline, and retry only what can succeed |
 | 10 | [Routing and frameworks](10-routing-and-frameworks.md) | Route with Go 1.22 `ServeMux` patterns, spot a gin handler whose `c` ignores cancellation or outlives its request, and choose between `ServeMux`, chi and gin on features rather than speed. Read after 3 and 4 |
 | 5 | [Fanning out](05-fanning-out.md) | Replace a hand-counted WaitGroup fan-out with `errgroup`, and bound its concurrency |
@@ -104,6 +105,8 @@ with `pprof`.
 - **A service's goroutines or file descriptors climb steadily:** chapter 2.
 - **Writing a retry helper, or reviewing one:** chapter 4, "Add up the worst case" and the
   two small bugs after "Backoff".
+- **The error log is full of `context canceled`, or nginx logs 499s:** chapter 3, "When the client
+  goes away".
 - **Requests to a fan-out endpoint hang until timeout:** chapter 5.
 - **Batch results are attached to the wrong records, or failures vanish:** chapter 9.
 - **Choosing a router or framework for a new service:** chapter 10, "How to choose".
@@ -127,8 +130,10 @@ connections to be reused. On the server, `ReadHeaderTimeout` is the one to alway
 its context never cancelled, and the client waited the whole time and got `EOF`. Real
 deadlines come from the handler's context, via `TimeoutHandler` or `context.WithTimeout`,
 and only stop work that's passed that context. Helpers that build their own background
-contexts break the chain. `Shutdown` drains HTTP connections but not the goroutines handlers
-started, and `main` must wait for it. Retries must fit inside the caller's deadline, target
+contexts break the chain. A client that leaves, which nginx logs as 499, cancels the request's
+context. That isn't a failure: choose the log level by `r.Context().Err()`, not by the error,
+which can hide the cancellation or carry another request's. `Shutdown` drains HTTP connections
+but not the goroutines handlers started, and `main` must wait for it. Retries must fit inside the caller's deadline, target
 only transient failures, use backoff with jitter, and live at one layer, since three retries
 at each of five layers is 243 attempts. Assigning a struct copies its slice headers and map
 references, so writes through the "copy" reach the original, and `maps.Clone` is shallow.

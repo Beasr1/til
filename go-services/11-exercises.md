@@ -122,21 +122,14 @@ context it passes to the handler, and that only stops work that's listening to i
 issued with `context.Background()`, or through a repository method that takes no context,
 runs to completion regardless.
 
-**4. `WriteTimeout` longer than the `TimeoutHandler` duration.**
-
-When the work deadline fires, `TimeoutHandler` writes a 503 to the client. If the
-connection's write deadline has already passed, that write fails too, and the client gets a
-bare connection error instead of a clear 503. With `WriteTimeout` slightly longer, the
-handler's timeout response always has time to get out.
-
-**5. In-flight requests cut off during deploys.**
+**4. In-flight requests cut off during deploys.**
 
 `Shutdown` makes `ListenAndServe` return `ErrServerClosed` immediately. `main` returns as
 soon as `ListenAndServe` does, and the process exits, while `Shutdown`, running in the other
 goroutine, is still waiting for active requests to finish. Those requests die with the
 process. `main` must block until `Shutdown` itself returns.
 
-**6. A liveness probe that queries the database.**
+**5. A liveness probe that queries the database.**
 
 The database slows down, so the probe's query passes one second and the probe fails on every
 pod at about the same time. After the failure threshold, the kubelet restarts every container.
@@ -146,6 +139,33 @@ take all the traffic and fail their probes too. A slow database has become a ful
 by your own probe. Liveness should check only that the process itself can make progress, for
 example that the HTTP server answers a trivial handler. A database dependency, if it's hard,
 belongs in readiness, which removes the pod from traffic without restarting it.
+
+**6. Demoting every error that wraps `context.Canceled`.**
+
+A real failure logged at Info: two requests share one load through `singleflight`, and the
+load runs on the first request's context. When that client leaves, the load fails with
+`context canceled`, and `singleflight` hands the same error to the second request, whose
+client is still waiting. The error wraps `context.Canceled`, so the rule logs the second
+request at Info as a client's choice, while its client receives a 500 (measured). It's a bug,
+since the shared load needs a context of its own, and the rule hides it.
+
+A departed client still logged at Error: the client leaves while the handler is writing a
+large response. The write fails with `broken pipe` or `connection reset by peer`, a network
+error that doesn't wrap `context.Canceled` (measured), so the rule logs it at Error. A library
+that formats the error it was given with `%v` rather than `%w` has the same effect.
+
+The check should look at the request's own context: `errors.Is(r.Context().Err(),
+context.Canceled)`. net/http cancels it when the client's connection closes or, on HTTP/2,
+when the client resets the stream, whatever error the work happened to fail with. It gives the
+right answer in both cases above: `nil` for the second `singleflight` request, and `context
+canceled` for the failed write. Match `Canceled` and not any context error, because under
+`TimeoutHandler` the same context ends with `DeadlineExceeded` when the server's own budget
+runs out, which is a failure.
+
+Still write the 500. If the client has gone, it reaches no one. But a request's context can be
+cancelled with the client still connected, by a `BaseContext` cancelled at shutdown for
+instance, and a handler that returns without writing then sends `200 OK` with an empty body: a
+success that never happened.
 
 ---
 
