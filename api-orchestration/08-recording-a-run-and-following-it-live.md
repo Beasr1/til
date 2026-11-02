@@ -344,6 +344,11 @@ bodies, limit 64 bytes
   {"truncated":true,"size":16}
 ```
 
+The run used Slack's documented placeholder webhook, all zeros and `X`s. It's shown here as
+`<team>/<bot>/<secret>` because secret scanners, GitHub's push protection among them, match the
+shape of a webhook URL and can't tell a placeholder from a live one. The function passed it
+through unchanged either way, which is the point.
+
 The headers kept their names and lost their values; `Authorization` kept its scheme.
 `Idempotency-Key` went too, because its name contains `key`. The rule over-redacts, and here it
 hides the value you'd want when debugging a retry
