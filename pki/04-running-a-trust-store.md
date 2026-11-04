@@ -443,4 +443,4 @@ tells them nothing (§2.5).
    the same key, and separately a cross-signed copy of another starts appearing in chains.
    Predict both outcomes, and say which pin would have survived both and why.
 
-(Answers in [`06-exercises.md`](06-exercises.md).)
+(Answers in [`07-exercises.md`](07-exercises.md).)

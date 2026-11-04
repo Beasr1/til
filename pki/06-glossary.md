@@ -1,4 +1,4 @@
-# 5. Glossary
+# 6. Glossary
 
 Reference, not reading. The number in parentheses is the chapter where the term is motivated.
 
@@ -89,3 +89,24 @@ Reference, not reading. The number in parentheses is the chapter where the term 
 | **Attestation extension** | OID `1.3.6.1.4.1.11129.2.1.17`, where Android attestation puts its entire payload |
 | **Signing lineage** | Android v3's proof that a new app signing key was endorsed by the old one. A rotation proof, **not** a certification path |
 | **Pinning** | storing a key or its digest and comparing directly, with no chain. The anchor mechanism for APK signing |
+
+## Time and long-term validation (file 5)
+
+| Term | Meaning |
+|---|---|
+| **TSA** — time-stamping authority | a service that signs "this hash existed at this time" with a key whose certificate carries a single, critical `id-kp-timeStamping` EKU (RFC 3161 §2.3) (5) |
+| **Timestamp token** | the TSA's CMS `SignedData` over a `TSTInfo`: policy, `messageImprint`, serial number, `genTime`, nonce (RFC 3161 §2.4.2) (5) |
+| **`messageImprint`** | hash algorithm plus hash of the timestamped data. The TSA sees only this (5) |
+| **`genTime`** | when the TSA created the token — the time it vouches for (5) |
+| **Signature-time-stamp** | a timestamp token over the **signature value**, carried as the unsigned CMS attribute `id-aa-timeStampToken` (`1.2.840.113549.1.9.16.2.14`) (5) |
+| **Document time-stamp** | a PDF signature dictionary of `Type` `DocTimeStamp`, `SubFilter` `ETSI.RFC3161`, whose token covers the whole document up to that revision (5) |
+| **Claimed signing time** | the time the signer wrote into the signature — PAdES puts it in `M`. A claim, not evidence (5) |
+| **POE** — proof of existence | "evidence that proves that an object existed at a specific date/time" (EN 319 102-1 §3.1). A validated timestamp is one (5) |
+| **best-signature-time** | EN 319 102-1's internal variable: the earliest time the verifier can trust the signature existed. Starts at "now"; timestamps move it back (5) |
+| **`REVOKED_NO_POE`**, **`OUT_OF_BOUNDS_NO_POE`** | INDETERMINATE sub-indications: the certificate is revoked / out of its validity period now, and nothing proves the signature predates that (5) |
+| **PAdES** | the ETSI profile of CMS signatures in PDF (EN 319 142-1) (5) |
+| **B-B, B-T, B-LT, B-LTA** | PAdES baseline levels: basic signature; + trusted time; + embedded validation material; + renewable document timestamps (5) |
+| **DSS** — Document Security Store | catalogue dictionary holding `Certs`, `OCSPs`, `CRLs` (and optionally `VRI`) for validating the document's signatures later (5) |
+| **VRI** | per-signature validation dictionaries inside the DSS, keyed by uppercase hex SHA-1 of the signature. "Should not be used" since EN 319 142-1 V1.2.1 (5) |
+| **`ByteRange`** | the byte ranges a PDF signature covers: the whole file as it was at signing, minus the signature's own `Contents` hole (5) |
+| **Incremental update** | PDF changes appended after the existing `%%EOF` with a new cross-reference section, leaving earlier bytes — and the signatures over them — intact (5) |

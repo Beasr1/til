@@ -59,7 +59,7 @@ and the big one: an answer covers **one certificate, never the chain above it**.
 
 Here is checks 1–5 failing for real. A three-level chain — root → issuing CA → leaf — generated
 for this chapter with `openssl req`/`openssl x509`; the recipe is in
-[`06-exercises.md`](06-exercises.md) so you can rebuild it. OpenSSL 3.6.4 on macOS.
+[`07-exercises.md`](07-exercises.md) so you can rebuild it. OpenSSL 3.6.4 on macOS.
 
 **The happy path**, so you know what success looks like:
 
@@ -301,4 +301,4 @@ File 03 takes four real chains and shows how differently they answer each of tho
 6. A colleague proposes caching successfully-built chains by leaf serial number to save the
    search. Serials are unique per issuer (file 01 §1.2). Say what breaks, and when.
 
-(Answers in [`06-exercises.md`](06-exercises.md).)
+(Answers in [`07-exercises.md`](07-exercises.md).)

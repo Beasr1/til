@@ -232,4 +232,4 @@ is why assuming they're the same bites.
    Google's guidance is to keep trusting chains to that root anyway. Reconcile that with check 2
    of file 02 §2.2, using file 01 §1.6.
 
-(Answers in [`06-exercises.md`](06-exercises.md).)
+(Answers in [`07-exercises.md`](07-exercises.md).)

@@ -1,4 +1,4 @@
-# 6. Exercises & answers
+# 7. Exercises & answers
 
 Worked answers to every **Check yourself**, then the recipe for the test chain, things to try,
 and questions to bring back. Read an answer only after you've committed to one.
@@ -463,6 +463,59 @@ expected to perform*. Certificates get reissued; keys usually don't.
 
 ---
 
+## File 5 — Signatures that outlive their certificate
+
+**1. Revoked last month, signed two years ago, B-B.**
+There is no POE, so best-signature-time is the current time (EN 319 102-1 §5.5.4 step 1). Path
+validation at that time finds the certificate revoked, and the result is INDETERMINATE with
+`REVOKED_NO_POE`. "Invalid" is wrong because nothing shows the signature was made *after* the
+revocation; it shows only that the verifier cannot place the signing before it. The claimed time
+in `M` doesn't help — it is the signer's own assertion (§5.1). A signature-time-stamp from two
+years ago would have moved best-signature-time back past the revocation and let the signature
+pass.
+
+**2. Why the signature value?**
+The question being answered is "did this *signature* exist at T?". A hash of the document proves
+only that those bytes existed — anyone holding the document could have had them, and a signer
+whose key was compromised later could still have signed after T. Timestamping the signature
+value proves the act of signing had already happened by T, which is what the revocation
+comparison in §5.4 needs.
+
+**3. B-T, TSA certificate and signing certificate both expired.**
+The signature timestamp is itself a signature by the TSA; once the TSA's certificate has expired,
+validating it now meets the same problem one level up — nothing proves the token existed while
+the TSA's certificate was valid. If the verifier still has revocation data showing neither
+certificate was revoked inside its validity period, it may get an OUT_OF_BOUNDS result rather
+than a pass. What would have covered it is **B-LTA**: a document time-stamp, added while the
+first TSA's certificate was still valid, over a DSS containing that TSA's chain and revocation
+data. That later timestamp is POE for the first token (§5.7).
+
+**4. Load-and-save after signing.**
+The library rewrites the file: objects move, the cross-reference table is regenerated, the page
+tree grows. The signature's `ByteRange` still names the old offsets, so the bytes a validator
+hashes are not the bytes that were signed, and the CMS message digest no longer matches — the
+signature reports as broken or the document as modified. The two correct ways: put the cover
+page in **before** signing, so the signature covers it; or append it as an **incremental
+update** after, in which case the first signature stays valid for its revision and validators
+report a change after signing (§5.6).
+
+**5. "LTV" with the signer's chain and OCSP only.**
+Missing: the **TSA's** chain and its revocation data (EN 319 142-1 §6.3 r), t)) — and possibly
+the trust anchor. In ten years the signer's evidence is all present, but the timestamp that
+dates the signature cannot be validated: the TSA's OCSP responder may be gone, so the token is
+INDETERMINATE, best-signature-time falls back to the current time, and the signing certificate's
+expiry gives `OUT_OF_BOUNDS_NO_POE`. The one piece left out undoes the rest.
+
+**6. No outbound network.**
+- **Run a TSA and revocation sources inside the perimeter.** Proof is as good as before, but the
+  verifier must now trust an internal TSA's chain — a new anchor relying parties need to accept.
+- **An approved egress route** to an external TSA, OCSP responders and CRL distribution points.
+  Same proof, using publicly trusted services; costs a network exception per dependency.
+- **Sign B-B and upgrade later**, from a connected system. Cheapest, but the POE is the
+  *upgrade* time, so any revocation between signing and upgrade is uncovered (§5.8).
+- **Pre-fetched CRLs** cover B-LT's revocation data if refreshed before `nextUpdate`, but do not
+  give a trusted time — B-T still needs a TSA.
+
 ## The test chain used in file 02
 
 Everything in file 02 §2.2 and §2.4 came from this. OpenSSL 3.6.4; it takes under a minute.
@@ -572,3 +625,5 @@ All of it on throwaway keys you generated; nothing here touches anyone else's in
 - "Walk me through what a cross-signed intermediate does to my particular trust store."
 - "Which of these checks is my library skipping by default, and does it matter here?"
 - "Compare how two schemes I name distribute their trust anchors, and which is more robust to a compromised CA."
+- "Walk me through what EN 319 102-1 does with this signature's timestamps, step by step, and where best-signature-time ends up."
+- "We sign offline. Compare an internal TSA, an egress route and a later B-B → B-T upgrade for what each actually proves."

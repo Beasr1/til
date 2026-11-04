@@ -284,4 +284,4 @@ file is. `openssl x509 -text -noout -in whatever.pem` and read `basicConstraints
 6. "Is Acme Ltd a certificate authority?" Rewrite that as a question with a mechanical answer,
    and say which bytes you would look at.
 
-(Answers in [`06-exercises.md`](06-exercises.md).)
+(Answers in [`07-exercises.md`](07-exercises.md).)

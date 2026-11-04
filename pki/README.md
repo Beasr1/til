@@ -1,8 +1,9 @@
 # Certificate Chains — A Course
 
 What a certificate actually is, what an "issuer CA" actually means, how a chain gets *built*
-before it gets *checked*, and why the same machinery answers four completely different
-questions depending on where you meet it.
+before it gets *checked*, why the same machinery answers four completely different
+questions depending on where you meet it, and how a signature stays verifiable after its
+certificate has expired.
 
 **This is reference learning material.** It's about RFC 5280, RFC 4158 and the published
 behaviour of real verifiers — not about any particular system you might be building. Nothing
@@ -13,7 +14,7 @@ I wrote this as a teacher, not as a peer. That means:
 - I explain things you might already know. Skim if so.
 - *Why* before *how*: each chapter opens with the problem that made the mechanism necessary.
 - Every file ends with **Check yourself** questions. Answers are in
-  [`06-exercises.md`](06-exercises.md).
+  [`07-exercises.md`](07-exercises.md).
 - Command outputs are real, from OpenSSL 3.6.4 on macOS, against a throwaway chain you can
   rebuild — the recipe is in the exercises file.
 
@@ -42,6 +43,9 @@ file 02 regardless of whether you care about cards.
 | **RFC 4158** | certification path **building** — informational, and explicit that building is unspecified | <https://www.rfc-editor.org/rfc/rfc4158> |
 | **ITU-T X.690** | BER and DER; why one encoding per value matters | <https://www.itu.int/rec/T-REC-X.690> |
 | **RFC 6960** | OCSP — what a revocation answer does and doesn't cover | <https://www.rfc-editor.org/rfc/rfc6960> |
+| **RFC 3161** | time-stamping: the request, the token, the TSA's obligations, the signature-time-stamp attribute (Appendix A) | <https://www.rfc-editor.org/rfc/rfc3161> |
+| **ETSI EN 319 142-1 V1.2.1** | PAdES: the four baseline levels (§6), the DSS (§5.4.2), document time-stamps (§5.4.3) | <https://www.etsi.org/deliver/etsi_en/319100_319199/31914201/01.02.01_60/en_31914201v010201p.pdf> |
+| **ETSI EN 319 102-1 V1.4.1** | AdES validation: proof of existence, best-signature-time, the INDETERMINATE sub-indications (§5.5) | <https://www.etsi.org/deliver/etsi_en/319100_319199/31910201/01.04.01_60/en_31910201v010401p.pdf> |
 | **`openssl-verification-options(1)`** | what a real verifier does and which checks are off by default | <https://docs.openssl.org/master/man1/openssl-verification-options/> |
 | **ICAO PKD** | CSCA master lists — how travel-document trust anchors are distributed, and on what cadence | <https://www.icao.int/icao-pkd/icao-master-list> |
 | **ETSI TS 119 612** | the EU Trusted List format; `NextUpdate` bounded at 6 months (§5.3.15) | <https://www.etsi.org/deliver/etsi_ts/119600_119699/119612/01.02.01_60/ts_119612v010201p.pdf> |
@@ -58,13 +62,14 @@ Read 1 then 2. They build.
 | 2 | [**Building a chain, and walking it**](02-building-and-walking-a-chain.md) | ⭐ Tell path *building* failures from path *validation* failures, read OpenSSL's error codes for which job broke, and explain why a chain one verifier builds another won't |
 | 3 | [Four chains, compared](03-four-chains-compared.md) | Say what "verify the certificate" means in web TLS, an eID card, Android attestation and APK signing — and why one of those has no chain at all |
 | 4 | [**Running a trust store**](04-running-a-trust-store.md) | ⭐ Answer "how many CAs do I mount, and who updates them?" — anchors vs intermediates, the real counts, the three rotation clocks, and whether a self-updating store is a good idea |
+| 5 | [Signatures that outlive their certificate](05-signatures-that-outlive-their-certificate.md) | Say what a timestamp proves and what it doesn't, read an RFC 3161 token, place PAdES B-B / B-T / B-LT / B-LTA, and spot the re-save that breaks every PDF signature |
 
 Reference, not reading:
 
 | # | File | |
 |---|---|---|
-| 5 | [Glossary](05-glossary.md) | Every term, in one place |
-| 6 | [Exercises & answers](06-exercises.md) | Worked answers to every **Check yourself**, plus the recipe for the test chain and things to try |
+| 6 | [Glossary](06-glossary.md) | Every term, in one place |
+| 7 | [Exercises & answers](07-exercises.md) | Worked answers to every **Check yourself**, plus the recipe for the test chain and things to try |
 
 ## If you're short on time
 
@@ -77,6 +82,7 @@ Reference, not reading:
 | To size the trust store you have to operate | file 04 §4.1 and §4.2 |
 | To decide whether to let your trust store self-update | file 04 §4.6 |
 | To decide where an allow-list should live (config or datastore) | file 04 §4.8 §Churn rate |
+| To know whether a signed PDF will still verify in ten years | file 05 §5.4, then the table in §5.8 |
 
 ## The one-paragraph summary of everything
 
@@ -115,7 +121,16 @@ them, the move is an **allow-list against the chain your verifier built** — no
 anchor, which costs the same effort and silently retires every check above it — pinned on the
 **SPKI hash** so routine renewal and cross-signing don't break it; and where such a list feels
 unmaintainable, the fix is usually to find the one column doing the churning and replace it
-with a predicate, as a version **floor** replaces a list of versions.
+with a predicate, as a version **floor** replaces a list of versions. Finally, everything above
+is checked **at a time**, and for a signature that has to verify for years the time that matters
+is when it was made — which the signature itself cannot prove, because the only date in it is
+the signer's claim. A **timestamp** from a third-party TSA over the signature value is the proof
+of existence that lets a verifier say "revoked, but after it signed"; without one, revocation or
+expiry makes an old signature not invalid but **indeterminate**. Embedding the chains and
+revocation data (PAdES B-LT, including the TSA's own) keeps that check possible after the CA's
+services disappear, and renewing document timestamps (B-LTA) keeps it possible after the TSA's
+certificate and the algorithms age — all of it appended as incremental updates, because a PDF
+signature covers exact bytes and any full re-save after signing breaks it.
 
 ## How to use me
 
@@ -130,3 +145,5 @@ These notes are a starting point. Good questions to bring back:
 - "What does 'certificate verified' in this log line actually license me to conclude?"
 - "How many anchors does this scheme actually need me to mount, and what arrives in the chain?"
 - "Should this trust store self-update? Walk me through the supply-chain risk for my case."
+- "Here's a signed PDF — which PAdES level is it, and what will a validator say about it in ten years?"
+- "Our signer has no outbound network. Which long-term validation options are left, and what does each cost?"
