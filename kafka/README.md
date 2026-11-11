@@ -2,12 +2,14 @@
 
 A short course on what Kafka actually promises an application, and on the client-library
 settings that decide whether you get it: message order, delivery after failures, and
-getting an event out of a request handler without losing it.
+getting an event out of a request handler without losing it. One chapter goes a level
+down, into the broker: how a partition is stored in files, what an acknowledgement means
+physically, and what a broker does after a crash.
 
 **This is reference learning material.** Everything here is general Kafka, checked
 against the Apache Kafka documentation and, for client behaviour, against the source of
 the Go clients `segmentio/kafka-go` and `twmb/franz-go`, because that's where defaults are
-actually set. The motivating failures are mundane: events for one entity processed out of
+actually set. Broker internals are checked against the broker's own storage code. The motivating failures are mundane: events for one entity processed out of
 order despite being keyed, a failed message that vanished between a dead-letter publish and a
 commit, events silently lost when a deploy stopped a process, and a batching consumer whose
 automatic commits ran ahead of its processing.
@@ -17,7 +19,7 @@ I wrote this as a teacher, not as a peer. That means:
 - I explain things you might already know. Skim if so.
 - Why before how: the failure comes before the rule that prevents it.
 - Every chapter ends with **Check yourself** questions. Answers are in
-  [07-exercises.md](07-exercises.md).
+  [08-exercises.md](08-exercises.md).
 - Where a client library and the Kafka documentation disagree, both are quoted. The
   disagreement is usually the lesson.
 
@@ -48,6 +50,13 @@ committed are all decided client-side.
 | [KafkaConsumer javadoc](https://kafka.apache.org/43/javadoc/org/apache/kafka/clients/consumer/KafkaConsumer.html) | The condition under which auto-commit is at-least-once |
 | [KIP-429](https://cwiki.apache.org/confluence/display/KAFKA/KIP-429%3A+Kafka+Consumer+Incremental+Rebalance+Protocol) | Eager versus incremental cooperative rebalancing |
 | [twmb/franz-go](https://github.com/twmb/franz-go) (`pkg/kgo/config.go`, `consumer_group.go`) | Autocommit defaults, revocation, `BlockRebalanceOnPoll` |
+| [Kafka design](https://kafka.apache.org/43/design/design/) | Page cache over an in-process cache, `sendfile` and its loss under TLS, batches staying compressed, ISR and committed messages, no fsync requirement |
+| [Kafka implementation](https://kafka.apache.org/43/implementation/_print/) | Record batch format, segment naming, reads, whole-segment deletes, recovery |
+| [Broker configs](https://kafka.apache.org/43/configuration/broker-configs/) | `log.dir` default, `replica.lag.time.max.ms`, recovery-point checkpointing, recovery threads |
+| [Kafka storage code](https://github.com/apache/kafka/tree/trunk/storage/src/main/java/org/apache/kafka/storage/internals/log) (`UnifiedLog`, `LogSegment`, `LogLoader`, `OffsetIndex`, `LogFileUtils`) | When segments roll and flush, what retention compares, how recovery truncates, index entry layout, file names |
+| [KIP-101](https://cwiki.apache.org/confluence/display/KAFKA/KIP-101+-+Alter+Replication+Protocol+to+use+Leader+Epoch+rather+than+High+Watermark+for+Truncation) | Why followers truncate by leader epoch, not high watermark |
+| [Eligible Leader Replicas](https://kafka.apache.org/43/operations/eligible-leader-replicas/) | KIP-966: the strict minimum-ISR rule, on by default for new clusters from 4.1 |
+| [Vanlightly on fsync](https://jack-vanlightly.com/blog/2023/4/24/why-apache-kafka-doesnt-need-fsync-to-be-safe) and [Redpanda on fsync](https://www.redpanda.com/blog/why-fsync-is-needed-for-data-safety-in-kafka-or-non-byzantine-protocols) | The two sides of whether replication without fsync is safe |
 
 ## Reading order
 
@@ -59,14 +68,18 @@ committed are all decided client-side.
 | 4 | [When a message fails](04-when-a-message-fails.md) | Classify failures, design a dead-letter topic someone can use, and avoid poison pills |
 | 5 | [Publishing from a request handler](05-publishing-from-a-request.md) | ⭐ Explain the dual-write problem and when an outbox is worth it |
 | 6 | [Batching consumers, commits and rebalances](06-batching-consumers-and-rebalances.md) | ⭐ Explain why autocommit loses buffered records, what a rebalance does to a batch in flight, and where a batch's commit belongs |
-| 7 | [Exercises & answers](07-exercises.md) | Check the model formed, and go deeper |
+| 7 | [Inside the broker](07-inside-the-broker.md) | Explain what's in a partition's directory, what an acknowledgement means physically, what a process crash and a power cut each lose, why retention overshoots, and how a broker recovers and re-joins |
+| 8 | [Exercises & answers](08-exercises.md) | Check the model formed, and go deeper |
 
 Read chapter 1 first, then 2 and 3 in order. Chapter 4 builds on 3's commit rules. Chapter 5
 stands alone apart from a reference to at-least-once delivery. Chapter 6 builds on chapter 3,
-and belongs after it in reading order; it was added later, so it takes the next number. Not yet
-written, and belonging here: Kafka transactions and idempotent producers in depth, the newer
-consumer group protocol (KIP-848), consumer lag and capacity, schema registries, and
-compaction. The questions at the end of file 07 are the honest list.
+and belongs after it in reading order; it was added later, so it takes the next number.
+Chapter 7 goes under the client into the broker. It belongs straight after chapter 1 and is
+useful background for 3 and 5, but the application chapters don't depend on it. It was added
+last, so it's number 7. Not yet written, and belonging here: Kafka transactions and idempotent
+producers in depth, the newer consumer group protocol (KIP-848), consumer lag and capacity,
+schema registries, compaction beyond the paragraph in chapter 7, and tiered storage. The
+questions at the end of file 08 are the honest list.
 
 ## If you're short on time
 
@@ -78,6 +91,8 @@ compaction. The questions at the end of file 07 are the honest list.
   table.
 - **Adding an event to an HTTP handler:** file 05 top to bottom.
 - **Writing a consumer that batches records:** file 06, the autocommit section and its trap.
+- **How Kafka stores data, or what a power cut loses:** file 07, "Durability: written is not
+  flushed" and "Crash and recovery".
 
 ## The one-paragraph summary of everything
 
@@ -112,7 +127,17 @@ commit records still sitting in the buffer: measured, 100 buffered, none process
 committed. Batching consumers must disable autocommit, commit after each batch, and commit or
 discard at revocation, because rebalances happen underneath a running batch. Cooperative
 rebalancing shortens pauses but doesn't remove those duplicates, and a commit made with an
-already-expired context fails, so every window's last batch runs twice.
+already-expired context fails, so every window's last batch runs twice. Underneath, each
+partition replica is a directory of segment files named by their first offset, appended to
+and never edited, with a sparse offset index beside each. Writes go to the page cache and
+aren't fsynced (`flush.ms` defaults to never), so an acknowledgement means the batch is in the
+RAM of every in-sync replica: durability comes from replicas failing independently, and a
+power cut shared by all of them loses the unflushed tail. Consumers read only below the high
+watermark and are served from the page cache by `sendfile`, which TLS disables. Retention
+deletes whole segments once their newest record is older than `retention.ms`, so data can
+outlive it by up to `segment.ms`. After an unclean stop a broker re-validates every segment
+after its recovery point, truncates at the first bad batch, and re-joins by truncating to
+where its last leader epoch ended and fetching the rest from the leader.
 
 ## How to use me
 
@@ -123,3 +148,5 @@ Ask me things like:
 - "Should this event go through an outbox?"
 - "How should this consumer handle a downstream outage?"
 - "We're adding a second producer to this topic in another language. What do we check?"
+- "Our replicas are all in one zone. What does losing that zone's power lose, and what does
+  fixing it cost?"

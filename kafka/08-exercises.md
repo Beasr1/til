@@ -1,4 +1,4 @@
-# 7. Exercises
+# 8. Exercises
 
 Worked answers to every **Check yourself** question, then things to try and questions
 worth asking me.
@@ -306,6 +306,95 @@ handle revocation in a callback.
 
 ---
 
+## File 07 — Inside the broker
+
+**1. `kill -9` versus power loss.**
+
+`kill -9` ends the process, not the kernel. The leader put the batch into the page cache with
+`write()` before acknowledging it, and the page cache belongs to the kernel, which writes dirty
+pages to the device in its own time whether or not the broker is alive. On restart there's no
+clean-shutdown marker, so the broker re-reads every segment after its recovery point, finds the
+batches valid, and keeps them. Nothing is lost, on that broker or anywhere else.
+
+Power loss takes the page cache with it. Anything written since the last flush, often most of the
+active segment, may never have reached the device. On restart, recovery finds the log ends early or
+hits an invalid batch, and truncates there. The write is gone from that broker. Consumers can still
+read it: `acks=all` meant every in-sync replica had it in its page cache, the other replicas kept
+their power, one of them is now the leader, and the restarted broker fetches the write back before
+it can rejoin the ISR.
+
+**2. Fetching from 52 345.**
+
+The segment is the one with the largest base offset at or below 52 345, which is 42 000, so
+`00000000000000042000.log`. The relative offset is 52 345 − 42 000 = 10 345. The broker binary-searches
+the memory-mapped `.index` for the last entry at or below 10 345. The index is sparse, roughly one entry
+per 4 KiB of log, so that entry points at a batch somewhat before the target. From that byte position
+it reads batch headers forward, using `baseOffset` and `lastOffsetDelta` to step over whole batches,
+until it reaches the batch that contains 52 345, and sends from the start of that batch.
+
+Batches go out whole, and a compressed batch can't be cut, so the broker can't start partway through
+one. If the batch covers 52 340–52 349, the client receives 52 340–52 344 as well and discards them. The
+response may also end with a partial batch, which the client drops and fetches again next time.
+
+**3. One record an hour.**
+
+The segment never reaches 1 GiB, so it rolls by time: when a batch arrives whose timestamp is more than
+`segment.ms` (seven days) after the segment's first batch. Each closed segment therefore spans about
+seven days. Retention deletes a segment once its *newest* record is older than `retention.ms`, which for
+this segment is seven days after it closed. By then its first record has been on disk for about fourteen
+days, plus up to five minutes until the next retention check and a minute of `file.delete.delay.ms`.
+
+Raising or lowering `retention.ms` alone doesn't fix the overshoot, because the overshoot comes from how
+much time one segment spans. Lower `segment.ms` to bound it (one day gives at most about eight days), then
+lower `retention.ms` by the same amount if seven days is a hard maximum (six days plus one). The cost is
+more, smaller segment files per partition, and with them more open files and more index files. If the
+deadline is strict, check the producers' clocks too, since `CreateTime` timestamps decide both the roll
+and the deletion.
+
+**4. The replaying group.**
+
+Caught-up groups and followers read data written seconds ago. It's still in the page cache, so those
+reads cost no disk I/O and `sendfile` serves them straight from RAM. The replaying group reads week-old
+segments that aren't cached. Those reads go to the device, and the pages they bring in take space in the
+same cache, pushing out the recent pages everyone else was about to read. Now the other groups miss the
+cache and read from disk too, and producers' appends compete with all of it for I/O. Nothing in Kafka is
+misbehaving: there is one kernel-managed cache, and every reader shares it. The usual remedies are to
+throttle the replay with a fetch quota, or to give brokers more RAM relative to the data in active use.
+How much it hurts depends on that ratio, and there's no general figure.
+
+**5. TLS and CPU.**
+
+Zero copy. Without TLS, the broker hands the kernel a file range and a socket, and `sendfile` moves the
+pages from the page cache to the network without the bytes ever entering the JVM. With TLS, encryption
+happens in the JVM's user-space TLS library, under keys that differ per connection, so every byte has to
+be copied out of the page cache, encrypted, and copied back into the socket. The design page is direct
+about it: "`sendfile` is not used when SSL is enabled". The extra CPU goes on those copies and on the
+encryption itself. Keeping zero copy would need TLS inside the kernel, which Kafka doesn't support.
+
+**6. One power feed.**
+
+Every acknowledged write that no replica had flushed yet. Kafka flushes when a segment rolls and at
+shutdown, not per write, so that can be most of each partition's active segment. `acks=all` with
+`min.insync.replicas=2` guaranteed each write was in at least two page caches, but all of those caches
+were in the same failure domain, so they all went at once.
+
+Recovery doesn't help because it works by re-fetching from a replica that still has the data, and none
+does. Each broker's local recovery truncates at the same kind of point, and the cluster carries on with
+those writes missing.
+
+The two remedies:
+
+- **Separate failure domains.** Set `broker.rack` so replicas are spread across racks or zones. This costs
+  cross-rack or cross-zone traffic and some latency on every replicated write.
+- **Flush on the write path.** Set `flush.messages` or `flush.ms`. At `flush.messages=1`, each append is
+  fsynced before it's acknowledged. This costs throughput and latency, because every flush waits for the
+  device.
+
+The first is the remedy Kafka's design assumes. The second is the setting the configuration reference
+recommends you leave alone.
+
+---
+
 ## Things to try
 
 - Run a local Kafka with a six-partition topic. Produce 100 messages with the same key from
@@ -323,6 +412,14 @@ handle revocation in a callback.
   committed offset with `kafka-consumer-groups.sh --describe`.
 - Start two members of one group with a long-running batch, add a third, and log
   `OnPartitionsRevoked` calls and duplicate offsets under the eager and cooperative balancers.
+- Create a topic with `segment.bytes` set to 1 MiB, produce a few megabytes, and list the partition
+  directory to watch segments roll. Then lower `retention.ms` to a minute and watch `.deleted` files
+  appear and vanish.
+- Run `kafka-dump-log.sh --files <segment>.log --print-data-log` on a segment and find each batch's
+  base offset, last offset, CRC and compression codec. Compare a batch from a compressed producer with
+  one from an uncompressed one.
+- `kill -9` a broker under load, restart it, and find "Recovering unflushed segment" in its log. Stop it
+  cleanly, restart it, and confirm the line doesn't appear.
 
 ## Questions worth asking me
 
@@ -335,3 +432,7 @@ handle revocation in a callback.
 - "Here's our batching consumer loop. Which records can be lost or duplicated, and when?"
 - "How does the newer consumer group protocol (KIP-848) change rebalancing compared with
   chapter 6?"
+- "What changes about retention, recovery and page-cache pressure when tiered storage is on?"
+- "How does the log cleaner choose what to compact, and what happens to tombstones?"
+- "Walk me through what Eligible Leader Replicas change in the last-replica-standing case."
+- "Here's our broker and topic config. What does a power cut in one zone lose?"
