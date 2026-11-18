@@ -1,4 +1,4 @@
-# 12. Exercises
+# 14. Exercises
 
 Worked answers to every **Check yourself** question, then things to try and questions
 worth asking me.
@@ -562,6 +562,28 @@ holds `/` or `\`, or is empty, `.` or `..`. The same request sent straight to Go
 would have been harmless, routed as the account `../admin`. That's the point of the ⚠️: the
 engine can't see which of the two stacks is behind the hostname.
 
+**7. Hops and shares, four loops.**
+
+(a) Eight runs, at hops 0 to 7. The eighth run's call carries hop 8 and is refused before a
+run starts. Its step fails, and each run before it fails in turn on the one after it. The
+eight runs share one trace id, so the run history shows the whole ring at once.
+
+(b) The count rises by one on every call, whichever workflow makes it:
+`a`(0), `b`(1), `a`(2), `b`(3), `a`(4), `b`(5), `a`(6), `b`(7). Then `b`'s call to `a`
+at hop 8 is refused: four runs of each. A limit counts passes through the engine, not
+through a workflow.
+
+(c) Not the hop count: every turn arrives as a new caller at hop 0. The share stops it.
+`a` may have 8 runs in progress, so the ninth call is refused before a run starts, and the
+chain unwinds, while the other workflows keep their 24 slots. The partner also needed a
+credential to call `a` at all, and that is what you limit or revoke.
+
+(d) RFC 9110 defines 503 as a server "unable to handle the request due to a temporary
+overload or scheduled maintenance, which will likely be alleviated after some delay". A
+loop isn't temporary. A caller told to try again later sends the same request, and the same
+loop refuses it again. With retries at several layers, that multiplies the work the refusal
+was meant to stop. Answer with something that names the loop, and don't retry it yourself.
+
 ---
 
 ## File 06 — Describing APIs
@@ -665,6 +687,112 @@ published service definition is shared by many servers that upgrade separately: 
 in all of them for a method some will never serve is the wrong default. When the description
 and the only server live in the same repository and change in the same commit, the build
 failure is better: it's the earliest warning there is, and it costs nothing.
+
+**7. An unsaved edit keyed by what's shared.**
+
+Every step that pins `users@2` resolves through that key, so the second step is filled with the
+unsaved edit too. Its preview shows a request that isn't saved anywhere, and that the step won't
+send when the workflow runs, which still uses the saved version 2. Nothing on the second step says
+it's being edited, so the preview misleads about a step nobody touched. Key the draft by the step
+being edited, under a name no saved version can have, `unsaved user` say, and point only that
+step at it. The second step still resolves `users@2` from the saved versions. The general rule: an
+unsaved overlay of shared data is keyed by who's editing, never by what's shared.
+
+**8. A fix to a pinned call.**
+
+None of them. Each still names version 3, and version 3 never changes, so all ten keep sending
+the key in the query string until each takes version 4 and is published again. Reaching all ten
+takes one edit per workflow, taking version 4, and a Publish each, or a migration that makes
+those edits for their owners, which still has to decide whether to publish them.
+
+Following the latest would have fixed all ten at their next run, with nobody involved, which is
+what you want from a security fix. It would also have shipped any mistake in version 4 to all ten
+at once, past every check that guards Publish, which is what pinning exists to prevent. The trade
+is real: pinning buys predictability and pays with slow fixes. Terraform's middle road is a
+version constraint that admits a range of newer versions, taken when someone runs
+`terraform init -upgrade` and recorded in a lock file. That needs versions that say what kind of
+change they are, as Semantic Versioning's do, and a plain counter doesn't.
+
+**9. Pins that point back in time.**
+
+No. A's revision 4 was saved, and published, before B's next revision, call it B3, existed. B3
+pins A4, so it points back in time. For a cycle, A4 would have to pin, directly or through
+others, a revision that pins A4: B3, or something newer still. But A4 was saved before any of
+those existed, and it can never change to point at them. Every chain of pins visits older and
+older revisions, so it ends.
+
+The loop pinning doesn't stop: a step in A with a request of its own whose URL is B's public
+address, and a step in B whose URL is A's. Those are just URLs, and nothing in either definition
+says they lead back to the engine. The hop count each call carries
+([file 05 §5.12](05-calling-urls-you-dont-control.md#512-when-the-url-is-you-loops)) is what
+stops that one.
+
+**10. Tightening a rule over what's already published.**
+
+Its callers notice nothing. The published revision keeps running as it did, because runs don't
+check what Publish checks (file 10 §10.2), and the revision never changes.
+
+The rollback is where it shows. Rolling back means publishing that old revision again, and
+Publish refuses it: its steps hold calls of their own. The owner has to convert them first, a
+new revision with each call moved into the library, and publish that. A one-click restore of a
+known-good revision is gone for anything older than the rule. That's the price of tightening at
+Publish, and it's worth saying out loud before the rule ships.
+
+Rewriting every stored revision would avoid the refusal, and break more. What a served revision
+runs would change without a Publish, the one moment checks and review happen. Revisions would no
+longer be a record of what ran. And the guarantee pinning rests on, that a version never changes,
+would hold only until the next migration. A mistake in the migration would reach every workflow
+at once, the failure pinning exists to prevent (§6.9).
+
+**11. A save that changes nothing.**
+
+Compare the document with the version it builds on, as values: the same keys and values, whatever
+their order or spacing. If they're equal, make no version and answer the base as it was, its
+number and tag unchanged, with a `2xx`. That's what Lambda's PublishVersion, Step Functions'
+PublishStateMachineVersion and a Kubernetes Deployment's revisions do (§6.8). The afternoon then
+leaves one version, and the pinned step has nothing newer to be offered. Compare in the same
+transaction that checks the base, or a save in between could slip past the comparison.
+
+The retry gets `412`. Its first attempt made the next version, so the retry's `If-Match` names a
+version that is no longer the latest, and the base is checked before anything is compared. RFC
+9110 allows a `2xx` for a change that "appears to have already been applied", but seeing that
+needs a comparison with the latest version, and a server that compares only with the base can't
+tell a lost response from someone else's edit. An idempotency key on the save
+([file 04](04-retries-idempotency-and-durability.md)) is the clean fix.
+
+**12. Deleting what's pinned.**
+
+Step Functions counts only what routes traffic now, the aliases. The served revision, 5, doesn't
+pin the call, so its rule would allow the delete. Zapier counts every user, paused ones too, and
+revision 2 is a user that can come back, so its rule refuses. An engine that lets any saved revision
+be published again has to follow Zapier: delete under Step Functions' rule, then roll back to
+revision 2, and the rollback publishes a revision whose call is gone. The old revision, the one you
+reached for because it was known to work, is the one that breaks.
+
+Between the check and the delete, a save can add a revision that pins the call. The check didn't
+see it, and the delete then leaves it pointing at nothing. A foreign key would stop that in the
+database, but a pin inside a JSON document can't have one. So the check and the delete run in one
+transaction holding a lock that makes saves wait, such as Postgres' SHARE mode on the revisions
+table: reads go on, inserts wait. The other way is to copy every pin into a table with a foreign
+key when a revision is saved. That's more machinery, and a draft that pins something not made yet
+could no longer be saved as it is.
+
+**13. Where the shared call is changed.**
+
+Edited from the step, the panel needs the call's whole editor (request, responses, samples,
+parameters), the states of an edit in progress (Edit, Save, Discard), a preview of the unsaved call
+sent for this step alone, a conditional save with `If-Match` and a way to report its `412`, and a
+workflow Save that waits while an edit is open, since saving then would pin a version not made yet.
+Any four will do.
+
+Changed only on its own page, a person loses the shortcut: fixing a URL without leaving the
+workflow, previewed over this workflow's data rather than the call's own samples. A new tab keeps
+the unsaved draft where it was; in the same tab, leaving means saving first or losing the work. The
+step learns about the new version when its tab is seen again: the browser fires
+`visibilitychange`, the data library refetches what's stale, and the step's line, which asks for
+the call's latest version, finds one more than it pins and offers it. A headless browser keeps
+every page visible and never fires the event, so nothing refetches, and the test has to fire it
+itself.
 
 ---
 
@@ -1023,6 +1151,24 @@ Two ways out:
   their own: the new process must either serve R's progress from the record, polling the database
   for a run it doesn't own, or send the browser to the owner.
 
+**7. What masking catches.**
+
+The header's copy is exact, so the request record keeps `[secret ...]` in its place. The echo in
+the response body is exact too, only written the way JSON writes a string, which is one of the
+forms masking looks for; the response record and anything that answers with that body are masked.
+The base64 copy is a changed copy, so it slips through, into the transform's value in the record
+and into the answer. The PIN is four characters, so it's masked only where a whole string is it,
+and the path is one longer string, so it slips into the request record's URL.
+
+To catch the base64 copy, either let only an upstream's request read a secret, after every
+expression has run, so no expression can encode it; or mask the encodings too, base64 and hex. The
+first costs flexibility, as a transform can no longer build a token from a secret; the second costs
+more forms to search and more false hits, as a short value's base64 is short. To catch the PIN,
+mask path segments equal to a secret, treating each segment of a URL as a whole string, or refuse
+secrets under 8 characters. The first is a little more code that knows what a URL is; the second
+turns away real values, as a PIN is short by nature. Whichever you choose, say plainly that
+masking is a net and not a wall.
+
 ---
 
 ## File 09 — Joins: a step with more than one way in
@@ -1229,6 +1375,241 @@ are sharded, how shards are named, and that `eu-3` exists. RFC 9457 §4 says pro
 messages include stack traces, or expose other sensitive information" as a sign of a
 misconfigured API.
 
+**5. An answer that can never win.**
+
+(a) `fallback`'s `2xx` line into the `200`. Its route, `{crm: catch, fallback: 2xx}`, pins
+`crm` to its catch block, and `crm`'s catch line is in the `500`, above, so it's reached in
+every run that reaches `fallback`'s line. The check reports that line, not the `200`, which
+`crm`'s `2xx` still gives. `fallback`'s catch line isn't reported: it's in the same answer as
+`crm`'s, where the first line reached gives the body, but the `500` is given either way.
+
+(b) None. No line's route pins a block whose line sits in an answer above it: `crm`'s catch
+line has the route `{crm: catch}`, and the lines above, `crm`'s `2xx` and `fallback`'s `2xx`,
+leave blocks that route doesn't pin. For a caller, a run where `crm` fails and `fallback`
+succeeds reaches both answers, and the `200` now wins: the fallback answers, as the author
+meant. The cost shows in a bigger workflow: if every other step's catch block also joins the
+`500`, a run where one of them failed but `crm` or `fallback` answered now gets a `200` too.
+
+(c) `crm` fails and `fallback` succeeds: a `200` from `fallback`'s line, as no line into the
+`500` was reached. Both fail: the `500`, through `fallback`'s catch line, passing
+`fallback`'s error on. This is the fix that keeps the error answer first: `crm`'s failure
+isn't an error any more, because `fallback` handles it.
+
+---
+
+## File 11 — Keys for the callers of a served workflow
+
+**1. How much of a key a list can show.**
+
+The 8 characters are `cnd_` and 4 random characters. The prefix is the same in every key, so it
+reveals nothing. Each random character carries 6 bits, so the list reveals 24 of the 256 and leaves
+232: whoever reads the list still has 2^232 values to search for any one key, which is as hopeless
+as 2^256 by §11.4's arithmetic.
+
+RFC 6749 §10.10 bounds the chance of guessing a token: at most 2^-128 (MUST), and at most 2^-160
+(SHOULD). If a list shows n of the 43 random characters, with n at most 42 so that each shown
+character is a full 6 bits, then 256 − 6n bits stay unknown, and one guess succeeds with
+probability 2^-(256 − 6n).
+
+- MUST: 256 − 6n ≥ 128, so n ≤ 21.3. At most 21 random characters, 25 with the prefix.
+- SHOULD: 256 − 6n ≥ 160, so n ≤ 16. At most 16 random characters, 20 with the prefix.
+
+Eight is far inside both. The catch is that what's shown adds up across places: a list showing the
+first 8 characters and a log line showing the last 8 reveal 48 random bits between them. Show the
+same characters everywhere.
+
+**2. bcrypt for keys.**
+
+Against guessing it buys nothing. A slow hash makes each guess dearer, and with 2^256 equally
+likely keys the expected work is already out of reach: §11.4's 3.7 × 10^45 years at an assumed
+10^18 guesses a second. Multiplying that by a work factor changes no decision anyone would make.
+
+It costs two things, mechanically.
+
+- **The lookup.** bcrypt salts every hash, so the same key gives a different hash each time and
+  the hash can't be an index. The key has to carry an id, `cnd_<id>_<secret>` say. The server finds
+  the row by the id, then runs bcrypt on the secret and compares.
+- **Every request pays.** bcrypt is slow on purpose, and the only bound OWASP's sheet gives is an
+  upper one: "As a general rule, calculating a hash should take less than one second." Every call
+  to a served workflow now spends that time before its run starts. And OWASP's warning
+  applies directly: a high work factor "could be used by an attacker to carry out a denial of
+  service attack by exhausting the server's CPU with a large number of login attempts". The id is
+  no defence, because it's shown in the list and travels in every request, so anyone who has seen
+  one can make the server run bcrypt as often as they like.
+
+The reviewer is right as soon as a key can be guessed: a short code, a PIN, or anything a person
+chose. NIST's rule for look-up secrets draws the line at 112 bits. Below it, "a salted and hashed
+form using a suitable password hashing scheme"; at or above it, a hash. A 256-bit key from a CSPRNG
+is far above.
+
+**3. Rotating for a caller with four servers and a 30-minute deploy.**
+
+(a) A routine rotation wants an overlap longer than the caller's slowest deploy, with room for a
+failed deploy and a retry. An hour is tight against 30 minutes, and a day is comfortable. During
+the deploy, servers still on the old key keep working, because the old key is expiring, and those
+on the new key work too, so the caller loses no requests. If the overlap ends before the deploy
+does, the servers still on the old key start getting 401s.
+
+(b) A leak wants **Now**. The old key stops the moment the new one exists, so all four servers get
+a 401 on every call until each one is restarted with the new key: up to 30 minutes of failed calls,
+less if the caller restarts all four at once. That outage is the price. An overlap would leave the
+leaked key working for whoever found it, and a key in a public repository is found quickly: finding
+leaked keys fast is what prefixes are for.
+
+(c) Watch the old key's last use before its expiry. It's the latest run that came with it (§11.9),
+so the number comes from run records the engine keeps anyway. Stripe's advice is to "expire it only
+after its request volume has been at zero for a few hours or days". If the old key is still in use
+near its expiry, the caller hasn't finished, and someone should ask them before it passes. In this
+design an expiry can't be pushed back once it's set, which is a gap a product might close with a
+way to extend it.
+
+**4. What each design tells someone holding an old key.**
+
+(a) One 401 for every refused key: the key doesn't work here. A key that never existed gets
+exactly the same bytes, so they can't tell a real old key from a made-up one, or which way it
+stopped.
+
+(b) Stripe's separate answer for expired keys tells them the key was real and has expired: the
+leak was genuine, the account exists, and its other leaked material may be worth trying. It also
+tells a legitimate caller to rotate, which is the point of it.
+
+(c) A 403 for a key of another workflow confirms the key is real and works somewhere. They can then
+try it against other workflow names until one answers 200.
+
+Adding `error="invalid_token"` to every refusal of a request that sent a key tells them nothing
+more. Every refused key gets it, real or invented, revoked or expired. The only difference it makes
+is between a request that sent a key and one that sent none, and the sender knows which they sent.
+That's why RFC 6750 can ask for it as a SHOULD.
+
+**5. The two-column foreign key.**
+
+The run refers to the pair (`caller_key`, `workflow_id`), and keys have a unique (`id`,
+`workflow_id`) for it to point at. With a foreign key on `caller_key` alone, a run of `orders` could
+record a key of `invoices`: a valid key, so the constraint passes, and the wrong caller in the
+record. A bug in the serving path, such as looking the key up without the workflow, would write
+exactly that. With the pair, the database itself refuses it, because no key of `invoices` belongs
+to `orders`.
+
+If keys could be deleted, each `ON DELETE` choice brings back a problem:
+
+- **`NO ACTION` or `RESTRICT`**, the default family: a key that has runs can't be deleted at all.
+  In practice that's every key that was ever used, so you'd need revocation anyway, and deletion
+  would work only for keys nobody called with.
+- **`CASCADE`**: deleting a key deletes its runs. The record of what happened goes with it, and so
+  does the audit.
+- **`SET NULL`**: the runs stay and forget their key, which is the third problem the chapter
+  started with: no run can say who called it. On a two-column key there's a further trap.
+  PostgreSQL's `SET NULL` sets "all of the referencing columns, or a specified subset of the
+  referencing columns, to null"
+  ([CREATE TABLE](https://www.postgresql.org/docs/current/sql-createtable.html)), so without a
+  column list it would null the run's `workflow_id` too.
+
+Revoking keeps every run pointing at a key that still exists, which is why the design never
+deletes.
+
+**6. The dialog that showed a key once.**
+
+(a) The dialog, and the state that holds the new key, were rendered inside the old key's row, under
+its Rotate button. Step by step:
+
+1. The rotation succeeds, and the answer carries the new key, which the dialog shows.
+2. The mutation tells the list to fetch itself again.
+3. The fresh list has the old key as expiring, and an expiring key isn't offered Rotate.
+4. React renders the row without the button, so the dialog that belonged to it unmounts, and its
+   state, the only copy of the key in the browser, goes with it. The server has only the hash, so
+   the key is gone for good.
+
+Fetching the list later only moves the moment. Any fetch while the dialog is open, on window focus
+or a timer, does the same, because the data the dialog changes is exactly what decides whether its
+owner renders. Moving the dialog up to the panel, which renders whatever the list holds, and keying
+it by the key's id, breaks that dependency.
+
+(b) They see the previous caller's key, in a dialog that looks as if it had just made it. Done set
+`open` to false itself. In Base UI 1.9.0 a controlled `open` is copied into the dialog's store
+without calling `onOpenChange`, which only the dialog's own parts trigger, through `setOpen`. So the
+code that forgets the key never ran, and the next open showed what was still in state. Someone could
+copy it and hand it to the wrong caller.
+
+Forget it in `onOpenChangeComplete(false)`, which runs once the dialog has finished closing, however
+it closed: Done, Escape, a click outside, or the close button. It runs after the exit animation for
+a reason: forgetting the key on the click would re-render the closing dialog with its empty form,
+which would show while the dialog animates out.
+
+## File 12 — Retiring what others still use
+
+**1. Another live revision.**
+
+`reports` at revision 1 pins `orders` at 5, which pins `billing` at 3, which pins `old-crm`. So
+archiving `old-crm` now reports `[{orders 5} {reports 1}]`: `orders` at 5 as before, and `reports`
+through it, two hops further. Both are live, so both would break.
+
+Archiving `orders` is refused for `reports` at 1 alone. `orders`'s own revisions don't count: a
+thing isn't in use by itself, which is why `users` skips a live revision whose name is the
+target's.
+
+**2. Why only what can run.**
+
+Revisions never change and are kept for good, so they're all still there. If every saved revision
+counted, anything ever pinned would stay in use for ever: the first draft that tried a call would
+keep it from ever being archived. Counting what can run says what breaks *now*: the latest
+revision, which the editor runs and a save builds on, and the published one, which callers reach.
+
+The other count, every revision, is the right one for *deleting*, as a deleted call can't come back
+for an old revision republished. That's why archiving can afford the narrower count: an old
+revision republished later that uses an archived call is refused at Publish, as a problem, instead
+of breaking.
+
+**3. The race.**
+
+1. The archive checks: nothing live reaches `old-crm`, as `orders` serves revision 6.
+2. A publish of `orders` at revision 5 checks: `old-crm` isn't archived, so revision 5 has no
+   problems.
+3. The archive marks `old-crm` archived, and commits.
+4. The publish makes revision 5 the one served, and commits.
+
+Now a served revision uses an archived call. One lock, taken by both the archive and the publish
+for their whole check-and-write, makes one wait for the other: whichever goes second sees what the
+first did, and the archive is refused, or the publish is. A draft save doesn't need it, because a
+draft may use an archived thing: it's saved, shows the problem, and can neither run nor publish.
+
+**4. The pool.**
+
+Ten at once jam it: each holds one of the ten connections waiting for the lock, and the holder can't
+get its second. With nine or fewer, there's always a spare connection for the holder. Three never
+jammed for the same reason, on a pool of four.
+
+Without the `BEGIN` sleep, each goroutine ran from start to end, lock and second connection
+included, before the next one had taken its first connection: Go started them one after another,
+and each took about a millisecond. Nobody was waiting while the holder asked, so there was always a
+connection free. The jam needs the waiting, which a real round trip to the database supplies.
+
+**5. A name reused.**
+
+An old caller still has `/serve/quotes` in its configuration. If a new `quotes` is made, the caller's
+next request reaches it: a different input schema, different answers, maybe different data sent to
+different places, and nothing tells either side. Keeping the name taken turns that into a refusal
+at the moment someone tries, with the reason: "an archived workflow has that name: restore it, or
+pick another".
+
+**6. The masker.**
+
+A masker replaces each copy of a secret's value in what a run keeps. It can only find copies of
+values it holds. If archiving dropped the value, a run that met it anyway, an API echoing it back,
+or a caller pasting it into an input, would keep it in the clear.
+
+Destroying a value should keep the record: the name, that it was secret, when it was destroyed and
+by what, so a revision that read it still says what it read. A run that met the value afterwards
+would keep it unmasked, as nothing knows it any more. That's the honest cost, and why destroying
+is its own, deliberate action.
+
+**7. Moving back.**
+
+Worked out from how things stand, the item is active again as soon as the step pins the older
+version: the latest revision does, so the condition holds. A stored flag, cleared when the step
+moved up, would say "dealt with" for good, while the step uses the older version again. The worked-out
+list is right about now; the flag is right about the past. Dismiss covers someone who moved back
+on purpose.
+
 ## Things to try
 
 - Run one expression through two JSONata implementations you have to hand and diff the outputs.
@@ -1272,6 +1653,12 @@ misconfigured API.
   covering rule from file 09's answer 5 and watch the false "missing" fall.
 - Build file 09 §9.5's satisfiability workflow for a few small formulas, and find the smallest
   unsatisfiable one the analysis lets through.
+- Write file 11 §11.2's minting in base 62, drawing each character from the CSPRNG and throwing away
+  bytes of 248 and above. Mint 100,000 keys, check that all 62 symbols turn up about equally often,
+  then double-click one in a terminal beside a base64url key that holds a `-`.
+- Time a served workflow's refusals, a thousand each for a revoked key, an expired key, a key of
+  another workflow and a made-up one, and compare the distributions. File 11 §11.6 argues that they
+  take the same path; I didn't measure it.
 
 ## Questions worth asking me
 
@@ -1326,3 +1713,7 @@ misconfigured API.
   mapping find missing?"
 - "We'd like loops in our workflows. What happens to our joins, and whose answer to the OR-join
   should we copy?"
+- "Here's our key table and the query that checks a key. What would a copy of the table give an
+  attacker, and does any refusal take a different path from the others?"
+- "We're rotating a partner's key. Given how they deploy, which expiry should we pick, and what does
+  the old key's last use say?"

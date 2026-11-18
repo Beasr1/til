@@ -1558,6 +1558,61 @@ through the HTTP interface" ([§5](https://www.rfc-editor.org/rfc/rfc9457.html#s
 [File 02 §2.8](02-graphs-and-scheduling.md#28-panics-in-step-goroutines) puts a panicking step's
 stack into the run record, and that's where it stays.
 
+## 8.9 What a run keeps of a secret
+
+A run record keeps what each step sent and what it got back, because that is what makes a
+failure something you can debug. The same record makes a run a place secrets leak to. An API key
+in a header, a token in a URL, a person's details in a body: each lands in the record as it was
+sent, and from there in the live stream, the logs, and whatever answers the caller. Records
+outlive the run, so whoever can read runs can read the key.
+
+Two defences, layered.
+
+**Keep values out of the definition.** A value many workflows use is saved once as a named
+constant and read by name, `$const.crm_token`. Its value is sealed (encrypted) with a key the
+database never holds, so the definition, its saved versions, its previews and any agent that reads
+definitions see only the name. It's the split GitHub Actions makes between its two kinds:
+"Variables provide a way to store and reuse non-sensitive configuration information", and "If you
+need greater security for sensitive information, such as passwords, use secrets instead"
+([GitHub, variables](https://docs.github.com/en/actions/concepts/workflows-and-actions/variables)).
+Rotating a key then means changing one value, and every run from then on reads it.
+
+**Mask what the run keeps.** Before anything of a run is written down, every exact copy of a
+secret's value is replaced by a stand-in that names it without showing it, `[secret crm_token]`.
+The OWASP cheat sheet asks for exactly that: a secret should "Never be logged (must implement
+either an encryption or masking approach in place to avoid logging plaintext secrets)"
+([OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html)).
+
+Masking is a net, not a wall. GitHub, which masks secrets in its logs, says "Because there are
+multiple ways a secret value can be transformed, this redaction is not guaranteed"
+([GitHub, secrets](https://docs.github.com/en/actions/concepts/security/secrets)). An expression
+that reads a secret can cut it, encode it, or join it to other text, and masking by exact copy
+finds only the copies nothing changed. What it can do is widen "exact" to the forms the run itself
+writes a value in. Conduit masks each secret as plain text, as JSON writes it inside a string,
+both with HTML characters escaped and without, and as a URL's query and path escape it. Two
+details decide whether that works.
+
+- **Longest first.** If one secret holds another, masking the shorter first leaves the rest of
+  the longer one in the clear. A store that lists constants by name will, sooner or later, hand
+  the shorter one over first; sort by length, longest first.
+- **Short values.** A four-digit PIN masked wherever it appears would blank out every year and
+  price that holds those digits. Windmill masks only secret values of 8 characters or more
+  ([Windmill](https://www.windmill.dev/docs/core_concepts/variables_and_secrets)); Conduit masks
+  a shorter one only where a whole string is it.
+
+Where masking runs matters as much as how. It has to sit at every door a run's data leaves
+through: each step's record, the live events, the run's own end, its answer to the caller, and
+the log lines. The input is one of those doors. A workflow that passes a secret to another
+workflow as its input must not leave the secret in the second one's record, so the record keeps a
+masked copy while the run reads the real one. And a preview never needs the value: give each
+secret a stand-in, the same text as the mask, and the preview shows the request a run would send,
+with the stand-in in its place.
+
+The test that earns trust in all this is a search. Run a workflow that sends a secret out, gets
+it echoed back in a response, and fails with it in an error message; then look for the value in
+everything the run left behind: its row, its steps' records, its events, its answer and its logs.
+Conduit's runner tests do that search (`server/internal/runner/mask_test.go`).
+
 ## Check yourself
 
 1. In §8.2's first timeline the scheduler saves each record before carrying on. Which saves
@@ -1593,5 +1648,10 @@ stack into the run record, and that's where it stays.
    seconds later, and what two browsers see: one whose stream stays on the old process, and one
    that reconnects and lands on the new one. Why can't `Last-Event-ID` help the second? Give two
    ways out, and what each costs.
+7. A step sends a secret API key in a header named `X-Code`, and the API echoes its headers back
+   in its response body. A transform base64-encodes the key into the workflow's answer. A
+   four-digit PIN, also secret, sits in a URL's path, `/v1/pins/4821/check`. Which copies does
+   masking by exact copy catch, and in which records? Which slip through? What would catch the
+   rest, and what would each fix cost?
 
-(Answers in [12-exercises.md](12-exercises.md).)
+(Answers in [14-exercises.md](14-exercises.md).)

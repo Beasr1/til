@@ -1343,6 +1343,662 @@ the same steps, and the `test` operations from §6.7 are how B finds out when th
 that it's a person's decision, or a different design altogether: real-time co-editing with
 operational transforms or CRDTs, which is outside this course.
 
+### A save that changes nothing
+
+Versions make one mistake easy to miss. If every save makes the next version, then pressing Save
+twice, or a client that saves on a timer, makes versions that differ only in their number. Each
+looks like a change in the history, and a step pinned to the first is offered "a newer version"
+that holds nothing new (§6.9). The fix is to compare before writing: a save equal to the version
+it builds on makes nothing, and answers that version as it was.
+
+Established version stores do exactly this. AWS Lambda: "AWS Lambda doesn't publish a version if
+the function's configuration and code haven't changed since the last version"
+([PublishVersion](https://docs.aws.amazon.com/lambda/latest/api/API_PublishVersion.html)). AWS
+Step Functions: PublishStateMachineVersion "is an idempotent API. It doesn't create a duplicate
+state machine version if it already exists for the current revision"
+([PublishStateMachineVersion](https://docs.aws.amazon.com/step-functions/latest/apireference/API_PublishStateMachineVersion.html)).
+Kubernetes, which keeps a revision per Deployment rollout: "the new revision is created if and
+only if the Deployment's Pod template (`.spec.template`) is changed"
+([Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)).
+
+Three details decide whether it works.
+
+**Compare values, not bytes.** The same JSON document can arrive with its keys in another order,
+or spaced differently. Postgres' `jsonb` stores a parsed form: it "does not preserve white space,
+does not preserve the order of object keys"
+([JSON Types](https://www.postgresql.org/docs/current/datatype-json.html)), so `=` on two `jsonb`
+values compares the documents, not their text. Conduit compares inside the save's transaction,
+after it has locked the row and checked the base (`server/internal/store/upstreams.go:111`, and
+`workflows.go:134` for workflows):
+
+```sql
+SELECT ... FROM upstream_versions
+WHERE upstream_id = $1 AND version = $2 AND definition = $3::jsonb
+```
+
+A row back means nothing changed, and that row is the answer; no row, and the insert goes ahead.
+Its tests send the base with its keys reordered, and a comparison of the text fails them.
+
+**Check the base first.** A save that equals its base, on a base that isn't the latest, is still
+refused with `412`. Someone saved in between, and writing the old document back would undo their
+change, even though it looks like "no change" from where this client stands. This also means the
+retry of §6.8's lost response still gets `412`. RFC 9110 would allow a `2xx` there, as the change
+"appears to have already been applied", but only a comparison with the latest version, not the
+base, can tell. Conduit compares with the base alone.
+
+**Put the rule where versions are made.** Conduit's editor already kept Save disabled until
+something changed, but one Save button, for an upstream edited in place, didn't check, and anyone
+could press it again and again. A script, or an agent ([file 07](07-agents-that-build-workflows.md)),
+calling the API can do the same. The button now waits for a change too, but that's a courtesy. The
+store's comparison is what makes the history honest.
+
+## 6.9 One call, shared: versions that never change, pinned
+
+Two workflows call the same users API. In each, a step holds the whole call: the method and URL,
+the headers with the API key, the timeout and retries, the statuses it handles, such as a 404 for
+"no such user", and a sample answer the editor previews with. Copies drift. The API moves to
+`/v2`, someone fixes one workflow and not the other, and the other one fails in production.
+
+The obvious fix is to save the call once and point both steps at it. That trades the failure for
+its opposite. An edit made for one workflow now reaches every workflow that points at the call,
+served ones included, the moment it's saved: no review, no Publish, none of the checks that guard
+one ([file 10 §10.1](10-every-way-ends-in-an-answer.md#101-three-moments-to-check-editing-publishing-running)).
+A workflow changes under its callers because someone fixed a different workflow.
+
+So the real question is what a step points at: the call as it is now, or the call as it was when
+the step was written. Tools answer it both ways:
+
+| Tool | A step points at | Which version runs | An edit to the shared thing |
+|---|---|---|---|
+| Step Functions, a state machine starting another | its ARN | a version (pinned), an alias (movable), or the latest ([StartExecution](https://docs.aws.amazon.com/step-functions/latest/apireference/API_StartExecution.html)) | follows what's named, fixed when the run starts |
+| Zapier, an integration's versions | a version | the one the Zap uses; a new one is promoted for new Zaps ([versions](https://docs.zapier.com/platform/manage/versions)) | nothing, until the Zap is migrated ([migrate](https://docs.zapier.com/platform/manage/migrate)) |
+| Terraform modules | a source and a version constraint | the newest the constraint allows, kept in a lock file ([module syntax](https://developer.hashicorp.com/terraform/language/modules/syntax)) | nothing, until `terraform init -upgrade` |
+| Windmill, a flow step running a script | a path, and maybe a hash ([PathScript](https://jsr.io/@windmill/windmill@1.776.0/doc/~/PathScript)) | the hash, if given | with a hash, nothing |
+| Kestra subflows | a flow, and maybe a `revision` | "By default, the last" revision ([Subflow](https://kestra.io/plugins/core/flow/io.kestra.plugin.core.flow.subflow)) | the next call runs it |
+| Power Automate custom connectors | an operation | the one there is | reaches every flow, so a breaking change has to be a new operation ([operational versioning](https://learn.microsoft.com/en-us/connectors/custom-connectors/operational-versioning)) |
+
+Following the latest is the easy default, and the risky one. Terraform pins, and says why: it's
+"explicitly constraining the acceptable version numbers to avoid unexpected or unwanted changes"
+([module syntax](https://developer.hashicorp.com/terraform/language/modules/syntax)).
+Pinning only means something if a version can't change once it's out, which is Semantic
+Versioning's rule: once a version is released, "the contents of that version MUST NOT be
+modified" ([semver.org](https://semver.org/)).
+
+### Pin, and offer the newer one
+
+A design that follows:
+
+1. Every save of the shared call is a new version, numbered, and never edited.
+2. A step names the version it uses: `{"upstream": "users", "version": 2}`.
+3. When a newer version exists, the editor offers it, and taking it is an ordinary edit of the
+   workflow: a new revision, checked, and served only once it's published.
+
+Nothing a served workflow runs changes without its own Publish. The cost is the mirror image: a
+fix to the shared call reaches no served workflow until each one takes it and is published
+again. Zapier's answer is a migration that moves the users of one version to another. An engine
+with a Publish step then has to decide whether such a migration publishes what it changes, or
+leaves a draft for each owner to check. That's open.
+
+### What the call owns, what the step owns
+
+Split the step by who decides each part:
+
+| Part | Owner | Why |
+|---|---|---|
+| Method, URL, headers, query, body | the call | it's the API's shape |
+| Timeout and retries | the call | how the API behaves under load is the same for every caller |
+| The statuses it handles, and their samples | the call | a 404 means "no such user" wherever the call is made |
+| Which version | the step | each workflow moves when its owner says so |
+| A value for each parameter | the step | only the workflow knows where the user's id comes from |
+| Where each response leads, and where failures go | the step | that's the workflow's own logic |
+
+A step that uses a call keeps only its half:
+
+```json
+{
+  "id": "user",
+  "kind": "http",
+  "uses": { "upstream": "users", "version": 2 },
+  "with": { "user_id": "input.user_id" }
+}
+```
+
+And the call's request reads its parameters, by name, never the run:
+
+```json
+{
+  "parameters": [{ "name": "user_id" }],
+  "request": { "method": "GET", "url": "https://users.example.com/v2/users/{{ user_id }}" },
+  "outputs": [{ "status": 404 }]
+}
+```
+
+That last rule is what lets the call be checked on its own, with no workflow in sight: every name
+its templates read must be one of its parameters. A pass over each expression's syntax tree can
+list the paths it reads from its input. When an expression may read what it doesn't name, the
+whole input handed to a function say, the pass can't be sure, and that check is left to the run.
+A run evaluates the step's `with` over the run's data
+([file 03 §3.3](03-mapping-data-between-steps.md#33-jsonata-through-the-running-example)), puts
+the values in one object, `{"user_id": "7"}`, and renders the call's request over that object
+instead of the run.
+
+### Fill before anything else looks
+
+Many things in the engine look at a step: the checks on saving and publishing (file 10), the
+preview, the run. Teaching each of them about steps that use calls would be the same change in
+every one of them. Instead, before any of them sees the definition, each step that uses a call is
+filled from its version, so it looks like a step with a request of its own, and every check
+written for those applies unchanged. What can go wrong is said of the step: a version that isn't
+there, a parameter with no value, a value for a parameter the call doesn't have, or a request of
+its own as well.
+
+```go
+// Fills each step that uses a shared call from the version it pins, and
+// says what's wrong where it can't, before anything checks, previews or
+// runs the workflow.
+package main
+
+import (
+	"fmt"
+	"maps"
+	"slices"
+)
+
+// Call is one version of a shared API call: the parameters its request
+// reads, by name, and the request itself.
+type Call struct {
+	Params []string
+	Method string
+	URL    string // "{{ user_id }}" reads the parameter user_id
+}
+
+// Ref names a version. A version is never edited once saved, so a Ref
+// always means the same call.
+type Ref struct {
+	ID      string
+	Version int
+}
+
+// Step has a request of its own (Method, URL), or uses a call at a
+// version, giving each parameter an expression over the run (With).
+type Step struct {
+	ID     string
+	Uses   *Ref
+	With   map[string]string
+	Method string
+	URL    string
+}
+
+// Resolve returns a copy of steps with each that uses a call filled from
+// its version, and a problem for each step that can't be.
+func Resolve(steps []Step, versions map[Ref]Call) ([]Step, []string) {
+	out := slices.Clone(steps)
+	var problems []string
+	for i, s := range steps {
+		if s.Uses == nil {
+			continue
+		}
+		r := *s.Uses
+		if s.URL != "" {
+			problems = append(problems, fmt.Sprintf("%s: it uses a call, so it has no request of its own", s.ID))
+		}
+		c, ok := versions[r]
+		if !ok {
+			problems = append(problems, fmt.Sprintf("%s: no version %d of %s", s.ID, r.Version, r.ID))
+			continue
+		}
+		for _, p := range c.Params {
+			if _, ok := s.With[p]; !ok {
+				problems = append(problems, fmt.Sprintf("%s: give %s a value", s.ID, p))
+			}
+		}
+		for _, name := range slices.Sorted(maps.Keys(s.With)) {
+			if !slices.Contains(c.Params, name) {
+				problems = append(problems, fmt.Sprintf("%s: %s isn't a parameter of %s v%d", s.ID, name, r.ID, r.Version))
+			}
+		}
+		out[i].Method, out[i].URL = c.Method, c.URL
+	}
+	return out, problems
+}
+
+func main() {
+	users := Ref{"users", 2}
+	versions := map[Ref]Call{
+		users: {Params: []string{"user_id"}, Method: "GET", URL: "https://users.example.com/v2/users/{{ user_id }}"},
+	}
+	steps := []Step{
+		{ID: "user", Uses: &users, With: map[string]string{"user_id": "input.user_id"}},
+		{ID: "typo", Uses: &users, With: map[string]string{"id": "input.id"}},
+		{ID: "gone", Uses: &Ref{"users", 3}},
+		{ID: "crm", Method: "POST", URL: "https://crm.example.com/v1/contacts"},
+	}
+	filled, problems := Resolve(steps, versions)
+	for _, s := range filled {
+		if s.URL != "" {
+			fmt.Printf("%-5s %s %s\n", s.ID, s.Method, s.URL)
+		}
+	}
+	for _, p := range problems {
+		fmt.Println("problem:", p)
+	}
+}
+```
+
+Its output:
+
+```text
+user  GET https://users.example.com/v2/users/{{ user_id }}
+typo  GET https://users.example.com/v2/users/{{ user_id }}
+crm   POST https://crm.example.com/v1/contacts
+problem: typo: give user_id a value
+problem: typo: id isn't a parameter of users v2
+problem: gone: no version 3 of users
+```
+
+<details><summary>Rust</summary>
+
+```rust
+// Fills each step that uses a shared call from the version it pins, and
+// says what's wrong where it can't, before anything checks, previews or
+// runs the workflow.
+use std::collections::{BTreeMap, HashMap};
+
+/// One version of a shared API call: the parameters its request reads, by
+/// name, and the request itself.
+struct Call {
+    params: Vec<&'static str>,
+    method: &'static str,
+    url: &'static str, // "{{ user_id }}" reads the parameter user_id
+}
+
+/// Names a version. A version is never edited once saved, so a `Ref`
+/// always means the same call.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Ref {
+    id: &'static str,
+    version: u32,
+}
+
+/// A request of its own (`method`, `url`), or a call at a version, each
+/// parameter given an expression over the run (`with`).
+#[derive(Clone, Default)]
+struct Step {
+    id: &'static str,
+    uses: Option<Ref>,
+    with: BTreeMap<&'static str, &'static str>,
+    method: &'static str,
+    url: &'static str,
+}
+
+/// A copy of `steps` with each that uses a call filled from its version,
+/// and a problem for each step that can't be.
+fn resolve(steps: &[Step], versions: &HashMap<Ref, Call>) -> (Vec<Step>, Vec<String>) {
+    let mut out = steps.to_vec();
+    let mut problems = Vec::new();
+    for (i, s) in steps.iter().enumerate() {
+        let Some(r) = s.uses else { continue };
+        if !s.url.is_empty() {
+            problems.push(format!("{}: it uses a call, so it has no request of its own", s.id));
+        }
+        let Some(c) = versions.get(&r) else {
+            problems.push(format!("{}: no version {} of {}", s.id, r.version, r.id));
+            continue;
+        };
+        for p in &c.params {
+            if !s.with.contains_key(p) {
+                problems.push(format!("{}: give {} a value", s.id, p));
+            }
+        }
+        for name in s.with.keys() {
+            if !c.params.contains(name) {
+                problems.push(format!("{}: {} isn't a parameter of {} v{}", s.id, name, r.id, r.version));
+            }
+        }
+        out[i].method = c.method;
+        out[i].url = c.url;
+    }
+    (out, problems)
+}
+
+fn main() {
+    let users = Ref { id: "users", version: 2 };
+    let versions = HashMap::from([(
+        users,
+        Call { params: vec!["user_id"], method: "GET", url: "https://users.example.com/v2/users/{{ user_id }}" },
+    )]);
+    let steps = vec![
+        Step { id: "user", uses: Some(users), with: BTreeMap::from([("user_id", "input.user_id")]), ..Default::default() },
+        Step { id: "typo", uses: Some(users), with: BTreeMap::from([("id", "input.id")]), ..Default::default() },
+        Step { id: "gone", uses: Some(Ref { id: "users", version: 3 }), ..Default::default() },
+        Step { id: "crm", method: "POST", url: "https://crm.example.com/v1/contacts", ..Default::default() },
+    ];
+    let (filled, problems) = resolve(&steps, &versions);
+    for s in filled.iter().filter(|s| !s.url.is_empty()) {
+        println!("{:<5} {} {}", s.id, s.method, s.url);
+    }
+    for p in problems {
+        println!("problem: {p}");
+    }
+}
+```
+
+</details>
+
+<details><summary>C++</summary>
+
+```cpp
+// Fills each step that uses a shared call from the version it pins, and
+// says what's wrong where it can't, before anything checks, previews or
+// runs the workflow. C++20.
+#include <algorithm>
+#include <cstdio>
+#include <map>
+#include <optional>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
+
+// One version of a shared API call: the parameters its request reads, by
+// name, and the request itself.
+struct Call {
+  std::vector<std::string> params;
+  std::string method, url;  // "{{ user_id }}" reads the parameter user_id
+};
+
+// Names a version. A version is never edited once saved, so a Ref always
+// means the same call.
+struct Ref {
+  std::string id;
+  int version = 0;
+  bool operator<(const Ref& o) const {
+    return std::tie(id, version) < std::tie(o.id, o.version);
+  }
+};
+
+// A request of its own (method, url), or a call at a version, each
+// parameter given an expression over the run (with).
+struct Step {
+  std::string id;
+  std::optional<Ref> uses;
+  std::map<std::string, std::string> with;
+  std::string method, url;
+};
+
+// A copy of steps with each that uses a call filled from its version, and
+// a problem for each step that can't be.
+std::pair<std::vector<Step>, std::vector<std::string>> resolve(
+    const std::vector<Step>& steps, const std::map<Ref, Call>& versions) {
+  std::vector<Step> out = steps;
+  std::vector<std::string> problems;
+  for (size_t i = 0; i < steps.size(); i++) {
+    const Step& s = steps[i];
+    if (!s.uses) continue;
+    const Ref& r = *s.uses;
+    if (!s.url.empty())
+      problems.push_back(s.id + ": it uses a call, so it has no request of its own");
+    auto found = versions.find(r);
+    if (found == versions.end()) {
+      problems.push_back(s.id + ": no version " + std::to_string(r.version) + " of " + r.id);
+      continue;
+    }
+    const Call& c = found->second;
+    for (const auto& p : c.params)
+      if (!s.with.contains(p)) problems.push_back(s.id + ": give " + p + " a value");
+    for (const auto& given : s.with)
+      if (std::find(c.params.begin(), c.params.end(), given.first) == c.params.end())
+        problems.push_back(s.id + ": " + given.first + " isn't a parameter of " + r.id +
+                           " v" + std::to_string(r.version));
+    out[i].method = c.method;
+    out[i].url = c.url;
+  }
+  return {out, problems};
+}
+
+int main() {
+  const Ref users{"users", 2};
+  const std::map<Ref, Call> versions{
+      {users, {{"user_id"}, "GET", "https://users.example.com/v2/users/{{ user_id }}"}}};
+  const std::vector<Step> steps{
+      {.id = "user", .uses = users, .with = {{"user_id", "input.user_id"}}},
+      {.id = "typo", .uses = users, .with = {{"id", "input.id"}}},
+      {.id = "gone", .uses = Ref{"users", 3}},
+      {.id = "crm", .method = "POST", .url = "https://crm.example.com/v1/contacts"},
+  };
+  auto [filled, problems] = resolve(steps, versions);
+  for (const auto& s : filled)
+    if (!s.url.empty())
+      std::printf("%-5s %s %s\n", s.id.c_str(), s.method.c_str(), s.url.c_str());
+  for (const auto& p : problems) std::printf("problem: %s\n", p.c_str());
+}
+```
+
+</details>
+
+<details><summary>JavaScript</summary>
+
+```js
+// Fills each step that uses a shared call from the version it pins, and
+// says what's wrong where it can't, before anything checks, previews or
+// runs the workflow.
+
+// A version is named "id@version", a string, as a Map compares object keys
+// by identity. A version is never edited once saved, so the name always
+// means the same call.
+const key = (ref) => `${ref.id}@${ref.version}`;
+
+// resolve returns a copy of steps with each that uses a call filled from
+// its version, and a problem for each step that can't be. A call is
+// { params, method, url }; a step has a request of its own (method, url),
+// or uses a call at a version, each parameter given an expression (with).
+function resolve(steps, versions) {
+  const problems = [];
+  const out = steps.map((s) => {
+    if (!s.uses) return s;
+    const r = s.uses;
+    if (s.url) problems.push(`${s.id}: it uses a call, so it has no request of its own`);
+    const c = versions.get(key(r));
+    if (!c) {
+      problems.push(`${s.id}: no version ${r.version} of ${r.id}`);
+      return s;
+    }
+    const given = Object.keys(s.with ?? {}).sort();
+    for (const p of c.params)
+      if (!given.includes(p)) problems.push(`${s.id}: give ${p} a value`);
+    for (const name of given)
+      if (!c.params.includes(name))
+        problems.push(`${s.id}: ${name} isn't a parameter of ${r.id} v${r.version}`);
+    return { ...s, method: c.method, url: c.url };
+  });
+  return { steps: out, problems };
+}
+
+const users = { id: "users", version: 2 };
+const versions = new Map([
+  [key(users), { params: ["user_id"], method: "GET", url: "https://users.example.com/v2/users/{{ user_id }}" }],
+]);
+const { steps, problems } = resolve(
+  [
+    { id: "user", uses: users, with: { user_id: "input.user_id" } },
+    { id: "typo", uses: users, with: { id: "input.id" } },
+    { id: "gone", uses: { id: "users", version: 3 } },
+    { id: "crm", method: "POST", url: "https://crm.example.com/v1/contacts" },
+  ],
+  versions,
+);
+for (const s of steps.filter((s) => s.url)) console.log(`${s.id.padEnd(5)} ${s.method} ${s.url}`);
+for (const p of problems) console.log(`problem: ${p}`);
+```
+
+</details>
+
+The versions come from one query for every version the definition names, not one per step.
+Filling a copy, rather than the definition itself, keeps what was saved exactly as saved.
+
+### The editor: fill on load, strip on send
+
+The editor draws a step that uses a call as it draws any step, so it fills the step from its
+version as the page opens: the same fill, on the client. What it sends, to save, check or
+preview, it strips back to `uses` and `with`. If the filled copy were saved, the step would carry
+its own copy of the call again, and the next version of the call would never reach it: the drift
+this section began with, back through the side door.
+
+Editing the call in place, from a step, has two traps. (Conduit later stopped editing a call from
+a step, for the reasons in [Where the shared call is changed](#where-the-shared-call-is-changed),
+but the traps hold for any editor that does.)
+
+- **Preview an unsaved edit for its own step only.** The preview has to run the call as it's
+  being edited, not as saved, so the editor sends the edited call with the request. Keyed by the
+  version it edits, `users@2`, it would replace version 2 for every step in the workflow that
+  pins it, and a second step would preview a call nobody has saved. Keyed by the step, under a
+  name no saved version can have, it reaches that step alone.
+- **Save the edit as a new version, conditionally.** The edit is based on version 2, so the save
+  says so, with `If-Match: "2"`, as in §6.8. If someone saved version 3 in the meantime, the
+  server answers `412`, and the editor says to take version 3 and edit again. Nothing is merged.
+
+### Must every call be shared?
+
+Once calls can be shared, a step can still hold a call of its own, or not. Every tool checked keeps
+one. n8n's HTTP Request node "allows you to make HTTP requests to query data from any app or service
+with a REST API" ([n8n](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.httprequest/)).
+In Logic Apps, "To call an endpoint from anywhere else in your workflow, add the built-in action
+named HTTP" ([Microsoft](https://learn.microsoft.com/en-us/azure/connectors/connectors-native-http)).
+Step Functions' HTTP Task keeps the URL and method in the step and shares only the credentials,
+through a connection that "helps you avoid hard-coding secrets, such as API keys, into your state
+machine definition" ([AWS](https://docs.aws.amazon.com/step-functions/latest/dg/call-https-apis.html)).
+Their catalogs are written by the vendor, so a generic step is the only way to reach an API the
+vendor hasn't covered.
+
+When the catalog is the user's own, that reason weakens. Making a shared call can be one dialog,
+and a definition then holds no calls at all, only references and wiring. An engine that goes that
+way still has definitions saved before, and published ones that must keep answering as they did.
+Rewriting them breaks the rule pinning rests on, that a version never changes. The way through is
+[file 10 §10.2](10-every-way-ends-in-an-answer.md#102-tightening-a-check-without-breaking-whats-published)'s:
+make it a rule at Publish, not at saving or running. A step with a call of its own still saves,
+previews and runs, but can't be published again until it uses a shared one, and the editor converts
+it in place, each placeholder becoming a parameter the step gives what it read.
+
+### When the call is another workflow
+
+A served workflow is a call too: its parameters are its input, and its responses its answers. That
+raises [file 05 §5.12](05-calling-urls-you-dont-control.md#512-when-the-url-is-you-loops)'s fear,
+a workflow that ends up calling itself through others. Pinning answers it by construction. A step
+can only pin a revision that's already published, and a revision never changes, so every pin
+points at a revision saved before the one that holds it. Order the revisions by when they were
+saved, and every pin points back in time. Following pins always reaches older revisions, so a
+chain of them ends: a cycle would need a revision older than itself. Kestra, whose subflows run
+the latest revision unless told otherwise, refuses cycles with a check instead: "A flow cannot
+call itself directly or indirectly; any cycle makes the flow invalid"
+([Subflows](https://kestra.io/docs/workflow-components/subflows)). With pinning, a cycle can't
+be built, so there's nothing to find.
+
+That argument rests on a premise: every pin points at a revision that existed when the pin was
+saved. An engine that saves a draft even when it has problems, so that no work in progress is
+lost, breaks it, and Conduit is one. A draft of A can pin B's revision 3 before B has saved it.
+The pin is a problem (`unknown_workflow`), but the draft is kept. Once B saves revision 3 pinning
+that draft of A, the two pin each other. Nothing runs in a loop, because Publish and a run both
+refuse a definition with problems, but saying which problem takes a check like Kestra's. Conduit
+walks the pins and refuses a workflow that reaches itself through others, at any revision
+(`uses_itself`, `server/internal/workflow/resolve.go:118`). That's stricter than a cycle check:
+A's revision 5 pinning B, which pins A's revision 1, is refused too, though that chain ends. A
+rule that names no revisions is one sentence to explain, and nothing useful is lost: a workflow
+that needs its own older revision can't be told apart, from outside, from one that loops.
+
+### Deleting what's pinned
+
+Pinning promises that what a step pins never changes. Deleting is the one change left: a pinned
+version that's gone can't be called. Systems that pin decide when deleting is safe by asking who
+still points at the version, and they count differently.
+
+AWS Step Functions refuses to delete "a state machine version currently referenced by one or more
+aliases. Before you delete a version, you must either delete the aliases or update them to point
+to another state machine version"
+([DeleteStateMachineVersion](https://docs.aws.amazon.com/step-functions/latest/apireference/API_DeleteStateMachineVersion.html)).
+An alias is a pointer that routes traffic now, so it counts; a run already going doesn't, as
+"deleting a state machine version won't terminate its in-progress executions". Zapier waits until
+nobody at all uses the version: "Deletion is also only possible when 0 users remain on a
+version", and the users it counts include paused Zaps, not only live ones
+([Deprecate or delete a version](https://docs.zapier.com/platform/manage/deprecate)).
+
+The difference is what counts as a user: what runs now, or anything that could run again. An
+engine where every saved revision stays runnable, so that rolling back publishes an old revision
+exactly as it was, has to count like Zapier: any revision, published or not, that pins the
+version. Conduit does. The cost is that something pinned once stays for good, as revisions are
+never deleted.
+
+The check and the delete also have to be one step. If a workflow saves a revision pinning the
+call between "nothing pins it" and the delete, the revision points at nothing. A foreign key would
+make the database refuse that save, but these pins live inside a JSON document, out of a foreign
+key's reach. Conduit's delete takes a lock instead, for the few milliseconds it runs: SHARE mode on
+the revisions table, which "protects a table against concurrent data changes" and conflicts with
+the `ROW EXCLUSIVE` lock every `INSERT` takes
+([Explicit Locking](https://www.postgresql.org/docs/current/explicit-locking.html)). Reads go on,
+and a save waits until the delete is done. Its revision then pins a call that's gone, which is a
+problem at Publish, not a broken run.
+
+Retiring a pinned call instead, archiving it and keeping it, is [file 12](12-retiring-what-others-still-use.md)'s subject:
+what counts as in use there is what can still run, through every pin, not every saved revision.
+
+What pinning doesn't stop is a step with a request of its own whose URL is a workflow's public
+address. That's a URL like any other, and §5.12's hop count is what stops it.
+
+### Where the shared call is changed
+
+A step that uses a shared call shows the call, so the next wish is to change it right there: fix
+a URL without leaving the workflow. Conduit allowed that at first. The step's panel showed the
+call's request locked, with an Edit button that opened it, previewed the edit over the workflow's
+data, and saved it as the call's next version. It worked, but it gave the panel two jobs, wiring
+this step and editing something other workflows use, and it carried the cost of both. The panel
+held the call's whole editor: five tabs of request fields shown greyed out, the responses and their
+samples, parameters to add and remove. It held the states of an edit in progress too: Edit, Save,
+Discard, a conflict to report. And the workflow's own Save had to wait while an edit was open, or it
+would have saved a step pinned to a version that didn't exist yet.
+
+Design tools met the same question with components, and they answer it the same way. An instance
+of a component shows it and lets you set what it exposes, its properties, but the component itself
+is changed where it's defined. Figma says so of a component that lives in a library: "It's not
+possible to push overrides to components in another file, including published libraries", and the
+way to change one is to "use the Go to main component action to open the library file"
+([Figma, Edit main components](https://help.figma.com/hc/en-us/articles/360038665934)). Workflow
+tools that call other workflows behave alike. n8n's Execute Sub-workflow node picks a workflow and
+passes it inputs, and its documentation describes no way to edit the sub-workflow from the node
+([n8n](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.executeworkflow/)).
+
+The split is the one [What the call owns, what the step owns](#what-the-call-owns-what-the-step-owns)
+drew. The step owns which version it pins, the values it gives the parameters, where each response
+leads, and what its failures do, and its panel shows those. The rest is the call's: one line naming
+the call, its version and its request, with a link to the call's own page. Nothing is lost by
+hiding the locked fields, because the step already previews the request its parameters make, with
+real values in, which says more than greyed-out templates did.
+
+What it costs is a round trip. Fixing a URL while building means leaving the workflow, and an
+editor with unsaved work has to protect it: Conduit's leave dialog offers only Stay or Leave, so
+going in the same tab would mean saving first, a revision for every trip. Opening the call's page
+in a new tab keeps the draft where it was. A new tab surprises some people, so WCAG's technique
+G201 says to warn before one opens, since it "can be disorienting"
+([W3C, G201](https://www.w3.org/WAI/WCAG22/Techniques/general/G201)). The link carries an icon,
+and its accessible name ends ", opens in a new tab".
+
+Coming back has to show what happened in the other tab, a newer version to take, and nothing needs
+to poll for it. "The `visibilitychange` event is fired at the document when its visibility status
+changes — for example, when the user switches browser tabs"
+([MDN](https://developer.mozilla.org/en-US/docs/Web/API/Document/visibilitychange_event)). TanStack
+Query, which keeps the web app's server data, listens for it: "If a user leaves your application and
+returns and the query data is stale, TanStack Query automatically requests fresh data for you in
+the background"
+([TanStack Query](https://tanstack.com/query/latest/docs/framework/react/guides/window-focus-refetching)).
+The step's line asks the library for the call's latest version, so on the way back the answer has
+grown by one, and the step offers it.
+
+That last part doesn't happen in a headless browser. Checked on 2026-11-04 with Playwright's
+headless Chromium: a page listening for `visibilitychange` heard nothing while a second page
+opened, was brought back to the front, and closed, and its `document.visibilityState` said
+"visible" throughout. Headless Chromium treats every page as visible, so the refetch a real tab
+switch causes never comes. A browser test of the round trip fires the event itself on the way back
+and says why. It then tests the app's answer to the event, not the browser's sending of it, which
+is the browser's to get right.
+
 ## Check yourself
 
 1. The backend team renames a JSON field in a Go struct, code-first. The editor, generated
@@ -1364,5 +2020,33 @@ operational transforms or CRDTs, which is outside this course.
    build fails in a file they never opened. Which file, and why there? What would a gRPC
    service generated with grpc-go's defaults have done instead, and when is that the better
    behaviour?
+7. A workflow has two steps that pin version 2 of the users call. A developer edits the call in
+   place from the first step, and the editor sends the unsaved call with each preview, keyed
+   `users@2`. What does the second step's preview show, and why is that wrong? What should the
+   key have been?
+8. Version 4 of a shared call stops sending an API key in the query string. Ten served workflows
+   pin version 3. Which of them send the fixed request once version 4 is saved? What would it take
+   to reach all ten, and what would following the latest have done instead, good and bad?
+9. Workflow A's published revision 4 pins workflow B's revision 2, and B's next revision is to pin
+   A's revision 4. Can pins like these make a cycle? Explain with the order the revisions were
+   saved, and name a loop between A and B that pinning doesn't stop.
+10. An engine decides every call must be shared: Publish now refuses a step with a call of its
+    own. A workflow published a year ago has three such steps. What do its callers notice? What
+    happens when its owner rolls it back to that revision after a bad release? Why not rewrite
+    every stored revision into shared calls instead?
+11. An editor saves every 30 seconds, and its server makes a version per save. After an idle
+    afternoon, the history holds 480 versions that are all the same, and a step pinned to the
+    first is offered a newer one all day. What should the server do with a save that changes
+    nothing, and what should it answer? The client then retries a save whose response was lost.
+    What does the retry get, and why?
+12. Version 3 of a shared call is pinned only by revision 2 of a workflow, which now serves
+    revision 5. Someone wants to delete the call. Would Step Functions' rule allow it? Would
+    Zapier's? Which should an engine follow if any saved revision can be published again, and
+    what goes wrong between checking and deleting when the pins live inside JSON?
+13. A step's panel lets you edit the shared call it uses and save the call's next version. Name
+    four things the panel must handle that it wouldn't if the call were changed only on its own
+    page. Now change it only there, from a link on the step: what does a person lose, why open the
+    page in a new tab, and how does the step learn about a version saved in that tab without
+    polling? Why does a headless browser test of the last part fail unless the test helps?
 
-(Answers in [12-exercises.md](12-exercises.md).)
+(Answers in [14-exercises.md](14-exercises.md).)

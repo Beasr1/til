@@ -10,6 +10,8 @@ A course on the engines that chain API calls together. It covers:
 - surviving a crash, or deciding not to;
 - recording each run without slowing it, and showing it live;
 - refusing to be turned against their own network;
+- letting callers in, each with a key of its own that can be rotated and revoked;
+- retiring what others still use: archiving, not deleting, and keeping what happened;
 - describing their APIs so that two codebases agree;
 - AI agents that are starting to build the workflows themselves.
 
@@ -30,7 +32,7 @@ I wrote this as a teacher, not as a peer. That means:
 - Code is in Go. Each core example also has Rust, C++ and JavaScript
   versions in collapsibles, and every example is run before it goes in.
 - Every chapter ends with **Check yourself** questions. Answers are in
-  [12-exercises.md](12-exercises.md).
+  [14-exercises.md](14-exercises.md).
 
 ## The one thing to understand first
 
@@ -67,6 +69,10 @@ I wrote this as a teacher, not as a peer. That means:
 | [OWASP SSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html) | Calling URLs you don't control |
 | [OpenAPI](https://spec.openapis.org/oas/latest.html) / [oapi-codegen](https://github.com/oapi-codegen/oapi-codegen) / [openapi-typescript](https://openapi-ts.dev) | One description of an API, generated into both codebases |
 | [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html) / [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901.html) / [RFC 6902](https://www.rfc-editor.org/rfc/rfc6902.html) / [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html) | Problem details, JSON Pointer, JSON Patch, conditional requests, and which 5xx says whose fault |
+| [Stripe: API keys](https://docs.stripe.com/keys) | Restricted keys for each part of an application, keys shown once, and rotation with a grace period of up to 7 days |
+| [GitHub: authentication token formats](https://github.blog/engineering/platform-security/behind-githubs-new-authentication-token-formats/) | Prefixes that make a token recognisable wherever it's pasted, and a checksum a scanner checks offline |
+| [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750.html) / [RFC 6749 §10.10](https://www.rfc-editor.org/rfc/rfc6749.html#section-10.10) | Bearer tokens: the 401, `WWW-Authenticate` and `invalid_token`; and how unguessable a generated token must be |
+| [OWASP: Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html) / [Authentication](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html) / [NIST SP 800-63B-4](https://pages.nist.gov/800-63-4/sp800-63b.html) | When a slow hash matters and when a fast one is enough, and one generic answer for every failed sign-in |
 | [Model Context Protocol, 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/changelog) | How agents discover and call tools |
 
 ## Reading order
@@ -83,7 +89,7 @@ I wrote this as a teacher, not as a peer. That means:
 |---|------|---------------------|
 | 2 | [Graphs and scheduling](02-graphs-and-scheduling.md) | ⭐ Reject a cyclic workflow with a useful error, write a scheduler that owns a run's state, and say what happens to a step whose parent was skipped |
 | 9 | [Joins: a step with more than one way in](09-joins-a-step-with-more-than-one-way-in.md) | Name the kinds of join in BPMN's, the Workflow Patterns' and Airflow's terms, say why an OR-join needs no look-ahead in a DAG, mark a join's required edges, and work out before any run what its mapping may find missing. Read after 2, and §9.4 and §9.6 after 3 |
-| 10 | [Every way ends in an answer](10-every-way-ends-in-an-answer.md) | Check a definition before it's published without stopping what's already served, find a branch no answer follows, make each step's failures a choice, and answer every error in one shape. Read after 8 and 9 |
+| 10 | [Every way ends in an answer](10-every-way-ends-in-an-answer.md) | Check a definition before it's published without stopping what's already served, find a branch no answer follows, make each step's failures a choice, answer every error in one shape, and find an answer that can never win when answers are tried in order. Read after 8 and 9 |
 | 3 | [Mapping data between steps](03-mapping-data-between-steps.md) | Build a request from earlier results with JSONata, put limits on an expression someone else wrote, and explain why preview and run must share an evaluator |
 | 4 | [Retries, idempotency and durability](04-retries-idempotency-and-durability.md) | Retry a POST without doing it twice, honour `Retry-After`, and choose how much of a run should survive a crash |
 | 8 | [Recording a run, and following it live](08-recording-a-run-and-following-it-live.md) | Record each step without slowing the run, keep secrets and cut-up bodies out of the record, stream a run's progress past proxies that buffer and time out, and say whose fault a failed run was. Read after 4 |
@@ -92,8 +98,10 @@ I wrote this as a teacher, not as a peer. That means:
 
 | # | File | After this you can… |
 |---|------|---------------------|
-| 5 | [Calling URLs you don't control](05-calling-urls-you-dont-control.md) | ⭐ Explain why checking a URL string doesn't stop SSRF, refuse private addresses at connection time in four languages, and keep data placed in a URL from changing what it names |
-| 6 | [Describing APIs](06-describing-apis.md) | Generate both sides of an API from one OpenAPI file, return errors that point at the offending field, and stop two editors overwriting each other |
+| 5 | [Calling URLs you don't control](05-calling-urls-you-dont-control.md) | ⭐ Explain why checking a URL string doesn't stop SSRF, refuse private addresses at connection time in four languages, keep data placed in a URL from changing what it names, and stop a workflow that calls itself |
+| 11 | [Keys for the callers of a served workflow](11-keys-for-the-callers-of-a-served-workflow.md) | Give each caller of each workflow a key of its own, say why 256 random bits behind a prefix need only SHA-256 where a password needs a slow hash, refuse every bad key with the same 401, rotate with an overlap a caller can deploy through, and revoke a key without losing who called. Picks up 5 §5.12's last point |
+| 6 | [Describing APIs](06-describing-apis.md) | Generate both sides of an API from one OpenAPI file, return errors that point at the offending field, stop two editors overwriting each other, and share one API call between workflows as versions each one pins |
+| 12 | [Retiring what others still use](12-retiring-what-others-still-use.md) | Archive instead of delete, work out what's in use by walking every pin from what can run, keep a publish from slipping in between an archive's check and its write, avoid a lock that jams a connection pool, keep names taken, disable a secret before destroying it, and keep a list of what happened that works out what's still active. Read after 6 |
 
 ### Part 3 — Agents
 
@@ -105,8 +113,8 @@ I wrote this as a teacher, not as a peer. That means:
 
 | # | File | |
 |---|------|---|
-| 11 | [Glossary](11-glossary.md) | Terms, one line each |
-| 12 | [Exercises & answers](12-exercises.md) | Worked answers, things to try, and questions to ask |
+| 13 | [Glossary](13-glossary.md) | Terms, one line each |
+| 14 | [Exercises & answers](14-exercises.md) | Worked answers, things to try, and questions to ask |
 
 Read file 01 first: every other file assumes its vocabulary and its data
 document. File 04 also assumes 02. Files 03, 05 and 06 need only 01, so read
@@ -116,11 +124,14 @@ was added later and takes the next number, but it builds on 02's scheduler and
 still and builds on 02 §2.6's rules, so it's listed straight after 02; its
 §9.4 and §9.6 also use 03 §3.3 on what a mapping does with a missing step. File 10 came
 after that, and builds on 08 §8.8's answers and 09 §9.4's routes, so it's listed after 09.
+File 11 came last. It needs only 01, and picks up 05 §5.12's last point, a credential on the
+served URL, so it's listed in Part 2 after 05.
 
 ## If you're short on time
 
 - **New to workflow engines:** file 01, all of it.
 - **Letting users type URLs into your product:** file 05, all of it.
+- **Opening a workflow to callers outside your team:** file 11, §11.1 to §11.8.
 - **A retried step did its side effect twice:** file 04.
 - **A step after a branch never runs, or runs without the data it needs:** file 09, §9.3 and §9.4.
 - **A published workflow that answers nothing on some branch, or leaks an upstream's errors:** file 10.
@@ -195,6 +206,17 @@ only until a proxy decodes the path: nginx turned an escaped `..%2Fadmin`
 into `/admin`, so a path value that's a dot segment or holds a slash is
 refused, not escaped.
 
+Let each caller of each workflow in with a key of its own, named for it, so a
+leak is one caller's problem and every run can say who called. A key is 256
+bits from a CSPRNG, in base 62 so a double-click selects it whole (base64url's
+`-` stops one), behind a prefix that makes it recognisable wherever it's
+pasted. It's shown once and kept as a SHA-256, which is enough: a slow hash
+makes each guess dearer, which matters for passwords people choose and not for
+2^256 equally likely keys. Every refused key gets the same 401, so the answers
+don't enumerate keys or workflows. Rotating gives the old key an overlap the
+caller can deploy through, or none after a leak, and keys are revoked, never
+deleted, because runs point at them.
+
 One OpenAPI description can generate both codebases, but generated code is
 two compile-time promises about your own code, not a check on the bytes that
 arrive. Errors should be RFC 9457 problem details with JSON Pointers, edits
@@ -216,5 +238,6 @@ Ask me things like:
 - "Here's a step's recorded request and response. What in them could still be a secret?"
 - "Is this JSONata expression safe to run on input I don't control?"
 - "Can a user point this HTTP client at our cloud metadata endpoint?"
+- "Here's how our served workflows check their callers. Does any refusal say more than the others?"
 - "Generate both sides of this endpoint from OpenAPI and show me what drifts if I edit one."
 - "What tools would an agent need to build this workflow from a written spec?"

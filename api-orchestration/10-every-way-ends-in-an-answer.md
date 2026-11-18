@@ -46,8 +46,9 @@ on data. Three questions follow:
 - how it finds the road that ends nowhere (§10.3), and the failures nobody decided about
   (§10.4);
 
-and one about the answer itself: what the caller gets for the errors the author did mean to
-pass on (§10.5).
+and two about the answer itself: what the caller gets for the errors the author did mean to
+pass on (§10.5), and, when a run can reach several answers and the first wins, how to find one
+that never can (§10.6).
 
 ## 10.1 Three moments to check: editing, publishing, running
 
@@ -73,7 +74,7 @@ dead optional edge only warned about, as `go vet` does.
 
 The test for which side a check falls on: could anyone want this? A join that can never run
 helps nobody. A step whose result nobody reads might be an audit call, on purpose. §10.3's
-road that ends nowhere is the first kind when a caller is waiting, with one caveat in §10.6.
+road that ends nowhere is the first kind when a caller is waiting, with one caveat in §10.7.
 
 ## 10.2 Tightening a check without breaking what's published
 
@@ -195,7 +196,81 @@ Why `400` is the line: [RFC 9110 §15](https://www.rfc-editor.org/rfc/rfc9110.ht
 calls the `4xx` and `5xx` classes client and server errors. A listed `3xx` is a redirection, not
 an error, so it answers with what the step got, as `2xx` does.
 
-## 10.6 What this doesn't settle
+## 10.6 An answer that can never win
+
+An engine that lets one answer take lines from many steps has to say what happens when a run
+reaches two answers. One rule is order: the answers are a list, and the first one a run
+reached wins. A Step Functions `Choice` state reads its rules that way: it "examines each of
+the Choice Rules in the order listed" and goes to "the first Choice Rule in which the
+variable matches" ([docs](https://docs.aws.amazon.com/step-functions/latest/dg/state-choice.html)).
+Order makes one error answer easy: every step's catch block joins a `500` listed first, so
+any failure beats any success below it, and the caller gets every failure from one place.
+
+Every first-match list has the same trap. Rust's `match` tries its arms in order, and the
+compiler warns when one can't be reached, with this example
+([`unreachable_patterns`](https://doc.rust-lang.org/rustc/lints/listing/warn-by-default.html#unreachable-patterns)):
+
+```rust
+let x = 5;
+match x {
+    y => (),
+    5 => (),
+}
+```
+
+"the `y` pattern will always match, so the five is impossible to reach. Remember, match arms
+match in order, you probably wanted to put the `5` case above the `y` case."
+
+An answer list hides the same mistake further from the eye. The author of §10.3's workflow
+adds a fallback: when `crm` fails, `fallback` reads a cached copy, and its result should
+answer `200`. Following the one-error-answer rule, `crm`'s catch block also joins the `500`.
+
+```mermaid
+flowchart LR
+    crm -->|"2xx"| a200["answer 2: 200"]
+    crm -->|"catch"| fallback
+    crm -.->|"catch"| a500["answer 1: 500"]
+    fallback -->|"2xx"| a200
+```
+
+Every run that reaches `fallback`'s line got there through `crm`'s catch block, and that
+block's line into the `500` is above. The `500` wins every time: `fallback`'s line can never
+give the `200`.
+
+**Finding it is a must question.** File 09 §9.4's routes say what each earlier step must have
+answered for a line to be taken. `fallback`'s line into the `200` has the route
+`{crm: catch, fallback: 2xx}`: it *pins* `crm` to one block. A line into an earlier answer,
+from a block that a route pins, is reached in every run that reaches the line with that
+route, so that line never answers. Note the strength needed: "`crm` may have failed" proves
+nothing; the route has to say it *did*. A merge after `crm` that runs on either of its blocks
+has `{crm: 2xx or catch}`. It pins nothing, and the check rightly leaves it alone: on the
+`2xx` way, the merge's answer is the one given.
+
+Two cases look like this and aren't:
+
+| Case | Why it isn't |
+|---|---|
+| A step that picks among the answers it's joined to, by a status its value names | Its line into the upper answer is reached only when it picks that one, not in every run where it ran |
+| Two lines into the same answer | The first one reached gives the body, but the answer is given either way |
+
+**Report the line, not the answer.** The `200` is still given, through `crm`'s `2xx`; only
+one line into it is dead. As with loose ends (§10.3), the report goes where the fix is:
+remove one of the two lines, usually the catch block's line into the `500`, since `fallback`
+now takes that failure; or move the answer above. Moving it costs more than it looks: in a
+list built around one error answer first, a `200` above the `500` also beats every other
+step's failure.
+
+**Sound, not complete, once more.** Routes look backward, at what a step needs before it
+runs. They don't look forward. Say every run past `fallback` also runs a `log` step, and
+each of `log`'s blocks joins the `500`. The `200` still never wins through `fallback`, but
+`log` isn't in `fallback`'s route, so the check says nothing. Seeing it takes the mirror
+question, what must run *after* a block. Compilers call it post-dominance: "a node z is said
+to post-dominate a node n if all paths to the exit node of the graph starting at n must go
+through z" ([Dominator (graph theory)](https://en.wikipedia.org/wiki/Dominator_(graph_theory))).
+That's a second analysis to build and keep right. Leaving it out keeps every report true and
+misses some, the same trade as §10.3.
+
+## 10.7 What this doesn't settle
 
 **Roads only data can cut.** §10.3 is sound, not complete. Recognising complementary
 conditions, `active` and `not active`, would catch the common case; in general a condition is
@@ -236,4 +311,11 @@ one.
    no error body written, and with the error body `{ 'error': error.code }`? What would passing
    the upstream's body straight through have told them, and which two sources warn against it?
 
-(Answers in [12-exercises.md](12-exercises.md).)
+5. A workflow's answers, in order: a `500`, joined to `crm`'s catch block and to `fallback`'s;
+   then a `200`, joined to `crm`'s `2xx` and to `fallback`'s. `fallback` runs after `crm`'s
+   catch block. (a) Which line never answers, and what does §10.6's check report? (b) Swap
+   the two answers. Does any line now never answer, and what changes for a caller? (c) Keep
+   the order, and remove `crm`'s catch line into the `500` instead. What does a caller get
+   when `crm` fails and `fallback` succeeds, and when both fail?
+
+(Answers in [14-exercises.md](14-exercises.md).)
