@@ -176,6 +176,49 @@ it as approximate. The PostgreSQL wiki's
 [count estimate page](https://wiki.postgresql.org/wiki/Count_estimate) covers the
 estimate technique and its limits.
 
+### What is being counted
+
+Before the cost question there's a meaning question, and it's the one that causes wrong
+dashboards. "Verifications this month" on a history table can be any of these, and they
+give different numbers on the same data:
+
+| Question | SQL | On 5 events from 3 customers |
+|---|---|---|
+| How many events? | `count(*)` | 5 |
+| How many events with an amount? | `count(amount)`, which skips `NULL`s | 3 |
+| How many distinct customers? | `count(DISTINCT customer)` | 3 |
+| How many failure events? | `count(*) FILTER (WHERE kind = 'fail')` | 2 |
+| How many customers had a success? | `count(DISTINCT customer) FILTER (WHERE kind = 'verify')` | 2 |
+
+(Reproduced on PostgreSQL 17.11 with a five-row table.) And there's a time question: is it
+"as of now" (a point-in-time count of current state, chapter 7's territory) or "everything
+that happened in the window" (cumulative)? Decide both, write the decision next to the
+metric, and then write the SQL. `FILTER` lets one pass compute several of these side by side
+instead of one query per number.
+
+The empty case is the other trap. From
+[Aggregate Functions](https://www.postgresql.org/docs/current/functions-aggregate.html):
+
+> It should be noted that except for `count`, these functions return a null value when no rows
+> are selected. In particular, `sum` of no rows returns null, not zero as one might expect,
+> and `array_agg` returns null rather than an empty array when there are no input rows.
+
+So a month with no events gives `count(*) = 0` but `sum`, `avg` and `array_agg` all `NULL`,
+and the same goes per group when a `FILTER` matches nothing in that group. Wrap them where
+the consumer expects a value: `coalesce(sum(amount), 0)`, `coalesce(array_agg(id), '{}')`.
+Then check the driver end. In Go, lib/pq scans an array through an adapter,
+`Scan(pq.Array(&ids))`, and turns a `NULL` array into a nil slice; `encoding/json` then
+writes a nil slice as `null`, not `[]`. A client that expected a list gets `null` for every
+empty month.
+
+Money aggregates have one more rule: keep full precision until presentation. Three line
+items of 0.333333, 0.333333 and 0.333334 sum to 1.00 if you round the total, and to 0.99 if
+you round each line first (both checked on 17.11). Store and aggregate at the higher scale
+(`numeric` with enough digits, never `float`), and round once, where the number is shown or
+invoiced. `avg` of an integer or `numeric` column returns `numeric` (the docs' function
+table), so averages don't silently truncate, but the scale of the result is whatever the
+division produced; round it explicitly for display.
+
 ## Check yourself
 
 1. Two rows for the same customer have identical `created_at`. What does
@@ -188,6 +231,9 @@ estimate technique and its limits.
    probably want?
 4. A query's dedup step selects `doc ->> 'name'` for display, and the page shows 20
    rows out of 50,000 in scope. Where is the cost, and how would you restructure it?
-5. Why does `COUNT(*) OVER ()` make `LIMIT 20` stop saving work?
+5. Why does `COUNT(*) OVER ()` make `LIMIT 20` stop saving work? Then a product manager
+   asks for "active customers this month" beside the total. What two things must you pin
+   down before writing the SQL, and what do `count(*)`, `sum(amount)` and `array_agg(id)`
+   return for a month with no rows?
 6. When is a single `OR` across indexed columns fine, and when should you split it into
    a `UNION`?

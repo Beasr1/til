@@ -1,4 +1,4 @@
-# 12. Exercises
+# 14. Exercises
 
 Worked answers to every **Check yourself** question, then things to try and questions
 worth asking me.
@@ -205,6 +205,15 @@ row of that result. So every row in scope is produced, sorted and counted, and t
 `LIMIT` only trims the output at the end. Without the window, the executor could stop
 after producing 20 rows, given a suitable index order.
 
+The follow-up. First, the unit: events or distinct customers, and if customers, "active"
+meaning what (any event, a successful one, a billed one)? That decides between `count(*)`,
+`count(DISTINCT customer)` and a `FILTER`. Second, the time semantics: customers active at
+some point in the window (cumulative), or customers whose current state is active right now
+(point in time)? Those come from different queries, often different tables. For a month
+with no rows, `count(*)` returns 0, while `sum(amount)` and `array_agg(id)` return `NULL`,
+not 0 and not `{}`. Wrap them in `coalesce(…, 0)` and `coalesce(…, '{}')`, and check that a
+`NULL` array doesn't reach a JSON client as `null` through a nil slice.
+
 **6. One `OR` versus a `UNION`.**
 
 A single `OR` is fine on one table when every arm is indexable. The planner can BitmapOr
@@ -406,6 +415,38 @@ explicitly.
 `timestamptz` and an explicit decision about which time zone "midnight" means. It stays
 indexable, because the column is compared directly.
 
+The New York follow-up: with the session in UTC, `$start::timestamptz` is UTC midnight,
+which in June is 20:00 the previous evening in New York. The range becomes
+`[20:00 the day before the start, 20:00 on the end day)` in the customer's time: it includes
+four hours of the day before and misses the last four hours of the end day. Compute the
+boundaries in their zone: `($start::date)::timestamp AT TIME ZONE $tz` and
+`($end::date + 1)::timestamp AT TIME ZONE $tz`, with `$tz` the zone name,
+`'America/New_York'`, not a fixed offset like `-04:00`, so a report spanning the November
+clock change gets UTC−4 for one boundary and UTC−5 for the other.
+
+The monthly follow-up: `+ interval '30 days'` is right only for 30-day months. For January
+it stops a day early and drops 31 January; for February it runs a day or two into March.
+Write `$start + interval '1 month'`: PostgreSQL keeps months as their own unit and resolves
+them against the real calendar when added to a date, so 1 January plus a month is 1
+February, and 1 February plus a month is 1 March, leap year or not.
+
+**6. `prepared statement "…" does not exist` behind a transaction-mode pooler.**
+
+pgx's default mode prepares each query as a *named* statement and caches the name per
+connection. A named prepared statement "lasts till the end of the current session", so it
+exists only on the server connection that ran the `Parse`. A transaction-mode pooler assigns
+a server connection "only during a transaction", so a later query that uses the cached name
+can land on a server connection that never prepared it: `26000`, does not exist. (The
+reverse, preparing a name that another client already created on that server connection,
+gives "already exists".) Pick `Exec` mode. It still uses the extended protocol, but with the
+unnamed statement, created and used within one round trip, so nothing has to survive
+between transactions, and values travel separately from the SQL. The cost is a parse and
+plan on every execution, no plan cache. The simple protocol works too, but pgx interpolates
+the values into the SQL text on the client, quoted and escaped, and its own docs say to
+prefer `Exec` "whenever possible" and keep the simple protocol for servers that don't
+support the extended protocol. A third option is a pooler that tracks protocol-level prepared
+statements, such as PgBouncer with `max_prepared_statements` set, which keeps the cache.
+
 ---
 
 ## File 09 — Changing a live table
@@ -511,6 +552,130 @@ Deleting or renumbering an applied migration never undoes anything.
 
 ---
 
+## File 11 — Invariants a constraint can't hold
+
+**1. `window_start = now()`, two transactions 50 µs apart.**
+
+`now()` is the start time of each transaction, so A's key is `(cust, t)` and B's is
+`(cust, t + 50 µs)`. Both checks run before either commits, so both see no charge. The two
+inserts carry different keys, the unique index finds no duplicate, and `ON CONFLICT` has
+nothing to fire on. Two rows commit. With `date_trunc('month', now())` both compute the same
+key (unless they straddle the end of a month). B's insert then waits for A's uncommitted
+row, and when A commits, B takes the `DO NOTHING` path. One row and no lock, because the rule
+became "one row per key".
+
+**2. One row at Read Committed, eight at Repeatable Read, both with the lock.**
+
+At Read Committed every statement takes a new snapshot when it starts. The second racer's
+check starts after it gets the lock, which is after the first racer committed, so the check
+sees the first charge and skips the insert. At Repeatable Read the transaction's snapshot is
+taken at its first non-transaction-control statement, and that statement is
+`SELECT pg_advisory_xact_lock(…)`. All eight snapshots are taken before any of them waits.
+The lock still serialises them, but each check reads a snapshot from before the first
+commit, so each sees no charge and each inserts. The keys differ (`now()` again), so nothing
+stops them.
+
+**3. At most three per (device, sensor).**
+
+A unique constraint says "at most one row per key value". There's no constraint for "at
+most three", because whether a fourth row is allowed depends on how many rows already
+exist. `FOR UPDATE` locks the rows the query returns. In an empty slot it returns none, so it
+locks nothing: two inserters both see zero and both insert, and on the next round both see
+two and both insert. Something has to exist before the first row does: an advisory lock on
+`(hash(device), sensor)`, or `FOR UPDATE` on a parent row, say the device's, that every
+writer locks first.
+
+**4. Catch `23505`, then write an audit row.**
+
+The audit insert fails with `25P02`, "current transaction is aborted", and the transaction
+can only roll back, taking everything before the failed insert with it. Catching the error
+in the application doesn't change the server's view that the transaction failed. Fixes: use
+`INSERT … ON CONFLICT DO NOTHING`, which isn't an error, and check the row count; or run the
+insert inside `SAVEPOINT s` and issue `ROLLBACK TO SAVEPOINT s` on `23505`, after which the
+transaction can carry on.
+
+**5. `SET state = 'completed' WHERE id = $1` bills twice.**
+
+The consumer completes the session: one row, bill. The API call arrives a moment later for
+the same session and runs the same statement. The row matches `id = $1` and is updated to the
+value it already has. The manual counts "matched rows whose values did not change", so the
+tag says one row again, and the API path bills too. Fix: say what the row must look like
+before the transition, `WHERE id = $1 AND state NOT IN ('completed', 'failed')`, and bill
+only when the count is 1. A concurrent second caller then waits for the first, re-evaluates
+the `WHERE` against the completed row, matches nothing and gets 0.
+
+**6. Case-insensitive login, in order.**
+
+Find rows whose `lower(email)` collides. Merge or rename them with whoever owns the
+accounts. Build `CREATE UNIQUE INDEX CONCURRENTLY … (lower(email))`, which also proves the
+clean-up was complete, because it fails with `23505` if a duplicate remains. Then switch the
+lookup to `lower(email) = lower($1)`. If you switch the lookup first, an email with two
+case-variants matches two accounts, `LIMIT 1` returns either, and which one can change
+between runs, so a user can land in someone else's account. Nothing stops new
+case-duplicates being created either, because a plain index enforces nothing.
+
+---
+
+## File 12 — Transactions and the connection pool
+
+**1. `pool.query('BEGIN')`, two inserts, `pool.query('COMMIT')`, under load.**
+
+Each call borrows whichever client is free. In tests one client is usually free, so all
+four land on it by luck. Under load they scatter. First outcome: `BEGIN` lands on client A
+and the inserts land on B and C, which have no transaction, so each autocommits on its own.
+A failure between them leaves half the work committed, and a `ROLLBACK` can't undo it.
+Client A goes back to the pool `idle in transaction`. Second outcome: `COMMIT` lands on a
+client that isn't in a transaction (PostgreSQL answers with a warning and does nothing),
+while A is still open, and the next caller to borrow A runs inside a transaction it didn't
+start. Its writes stay invisible and its locks stay held until something on A commits or
+rolls back. What's left in the pool: one or more clients inside open transactions, holding
+locks, until `idle_in_transaction_session_timeout` (off by default) or a restart ends them.
+
+**2. Where `defer tx.Rollback(ctx)` goes.**
+
+Straight after `Begin`, so every later return, including early returns added a year later
+and panics, passes through it. Putting rollback in each error branch relies on every future
+branch remembering it. After a successful `Commit`, the deferred call returns `ErrTxClosed`
+and does nothing, so the success path costs nothing. If the rollback itself fails, pgx's
+`Tx` docs say "any other failure of a real transaction will result in the connection being
+closed": the connection is in an unknown state, so it's thrown away instead of being handed
+to the next caller.
+
+**3. `Promise.race` timeout plus three retries.**
+
+Pool of N, all busy. A request races `pool.connect()` against 100 ms. The timer wins, the
+request fails, but its `connect()` stays queued. When a client frees up, the queued
+`connect()` takes it, and the promise resolves into nothing: no code holds that client, so
+nobody releases it. That's one slot gone for good. Each retry queues another `connect()`, so
+one request can leak up to four slots. After N leaks every slot is held by an orphan, and the
+pool never recovers, burst or no burst, until the process restarts. The fix is
+`connectionTimeoutMillis` on the pool, which removes the waiter from the queue, and retries
+with backoff kept out of the acquire path.
+
+**4. Advisory lock on A, a helper that takes the pool, pool of 8.**
+
+It can deadlock at 8 concurrent publishes. Each takes a connection and waits for the lock
+(still holding its connection). The one holding the lock asks the pool for a second
+connection, and all 8 are held: 7 by waiters, 1 by itself. Nothing frees until a timeout.
+At 16 the same happens at 16 concurrent publishes. A bigger pool moves the threshold, it
+doesn't remove it, and burst size isn't under your control. The fix is passing the
+transaction into the helper so it uses connection A.
+
+**5. Four replicas × 4 workers × 10, plus a migration job and monitoring.**
+
+160 connections from the service at peak, if every pool fills. The default `max_connections`
+is 100, with 3 reserved for superusers, so 97 for everyone else. Once 97 are open, new
+connection attempts are refused with `FATAL: sorry, too many clients already` (reproduced on
+17.11 with a tiny `max_connections`), and which pools get them is down to timing, so the migration job or the monitoring agent can
+be the one locked out. Ways to fit: size each pool from the budget, say
+(97 − a few for migrations and monitoring) / 16 processes ≈ 5 each, remembering deploys run
+old and new replicas side by side; reduce processes per replica (more replicas with one
+process each give the same arithmetic but one pool per container, which is easier to
+reason about); or put a transaction-mode pooler in front so client connections no longer map
+one to one onto server connections.
+
+---
+
 ## Things to try
 
 - Start a throwaway PostgreSQL in Docker, build a few hundred thousand rows of
@@ -523,6 +688,13 @@ Deleting or renumbering an applied migration never undoes anything.
   with `IF NOT EXISTS` and inspect `pg_index.indisvalid`.
 - `PREPARE` a query against a partial index and `EXPLAIN EXECUTE` it under
   `plan_cache_mode = force_custom_plan` and `force_generic_plan`.
+- Run chapter 11's check-then-insert with eight concurrent callers at Read Committed,
+  Repeatable Read and Serializable, with and without the advisory lock. Then watch
+  `SELECT locktype, objid, granted FROM pg_locks WHERE locktype = 'advisory'` from a third
+  session while they queue.
+- With node-postgres and a pool of three, run `BEGIN`, an insert and `ROLLBACK` through
+  `pool.query` while another query is in flight, then look for the row and for
+  `idle in transaction` in `pg_stat_activity` (chapter 12 §12.1).
 
 ## Questions worth asking me
 
@@ -534,3 +706,7 @@ Deleting or renumbering an applied migration never undoes anything.
 - "How would you partition this table, and which of these indexes survive the change?"
 - "What does logical replication change about everything in chapter 9?"
 - "How do Flyway's checksums and repeatable migrations change the rules in chapter 10?"
+- "Here's a rule our service enforces in code. Can a constraint hold it, and if not, which
+  of chapter 11's tools fits?"
+- "We want PgBouncer in transaction mode. Which of our drivers' settings and session habits
+  break, and in what order should services move?"
