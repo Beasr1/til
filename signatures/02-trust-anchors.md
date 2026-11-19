@@ -187,4 +187,4 @@ make every act of vouching public so the wrong ones can be found.
 5. CT doesn't stop a CA misissuing a certificate for your domain. What does it give you
    instead, and what has to be true of *you* for it to help?
 
-(Answers in [`07-exercises.md`](07-exercises.md).)
+(Answers in [`08-exercises.md`](08-exercises.md).)

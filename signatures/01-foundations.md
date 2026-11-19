@@ -180,6 +180,208 @@ sent that request", the receiver's HMAC can't settle it: the receiver could have
 tag themselves. A MAC authenticates the message to the other party; it can't convince a
 third party who wrote it.
 
+### 1.5.1 A worked example: a token that carries state
+
+The webhook is two parties sharing a key. The other textbook case is **one party talking to
+its own future self**. Say an ordering service quotes a price at step one and confirms the
+order at step two, minutes later, possibly on a different machine, possibly from a queue.
+Step two must trust the quoted price. It could look it up in a database — or step one can
+hand the client a token that *carries* the price, MACed with a key only the service holds.
+The client can read the token and pass it back, but can't change it. Since the minter and
+the verifier are the same party, HMAC's "every verifier could have forged it" limit costs
+nothing here.
+
+Designing one well is mostly about removing ambiguity. A layout that works:
+
+```
+offset  bytes  field
+0       1      version            0x01 — first, and covered by the MAC
+1       16     order id
+17      8      amount, minor units big-endian uint64 (129900 = 1,299.00)
+25      8      expiry, Unix seconds
+33      8      random nonce
+41      16     HMAC-SHA256(key, bytes 0..40), truncated to the left-most 128 bits
+               ─────
+               57 bytes → 76 characters of unpadded base64url
+```
+
+What each choice buys:
+
+| Choice | Why |
+|---|---|
+| **Fixed length, checked first** | No delimiters to parse, no field that can be stretched into the next. A wrong length is rejected before any other work |
+| **Version byte, inside the MAC** | You *will* need another field. Version 2 can have a different layout; the verifier dispatches on the byte and rejects versions it doesn't know. Without it, adding a field means inventing magic values ("0 means the old behaviour") and hoping no old token collides with them |
+| **Integers, not text or floats** | An amount as a decimal string has formatting ambiguity; as a float it can't hold most decimal fractions exactly. Minor units in a fixed-width integer have one spelling |
+| **Expiry inside the token** | The MAC proves the service minted it, not that it's still fresh |
+| **Truncated tag** | Bytes matter in a URL or header. Truncation is allowed but has limits (below) |
+| **Constant-time compare** | A comparison that stops at the first differing byte leaks, through timing, how many leading bytes were right |
+
+```go
+const (
+	version    = 0x01
+	payloadLen = 1 + 16 + 8 + 8 + 8 // version | order id | amount | expiry | nonce
+	tagLen     = 16                 // HMAC-SHA256 truncated to 128 bits
+	tokenLen   = payloadLen + tagLen
+)
+
+var errBadToken = errors.New("bad token")
+
+func verify(key []byte, tok string, now time.Time) (orderID [16]byte, amountMinor uint64, err error) {
+	raw, err := base64.RawURLEncoding.DecodeString(tok)
+	if err != nil || len(raw) != tokenLen || raw[0] != version {
+		return orderID, 0, errBadToken // exact length and known version, before anything else
+	}
+	mac := hmac.New(sha256.New, key)
+	mac.Write(raw[:payloadLen])
+	if !hmac.Equal(mac.Sum(nil)[:tagLen], raw[payloadLen:]) { // constant time
+		return orderID, 0, errBadToken
+	}
+	if now.Unix() >= int64(binary.BigEndian.Uint64(raw[25:33])) {
+		return orderID, 0, errBadToken // expired
+	}
+	copy(orderID[:], raw[1:17])
+	return orderID, binary.BigEndian.Uint64(raw[17:25]), nil
+}
+```
+
+Minting is the mirror image: fill the 41 payload bytes, compute
+`hmac.New(sha256.New, key)` over them, append `Sum(nil)[:tagLen]`, and base64url-encode.
+Go's documentation is explicit about the comparison: "Receivers should be careful to use
+Equal to compare MACs in order to avoid timing side-channels"
+([`crypto/hmac`](https://pkg.go.dev/crypto/hmac)). All four versions here were run against
+a Go-minted token.
+
+<details>
+<summary>JavaScript (Node)</summary>
+
+```js
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+const PAYLOAD_LEN = 1 + 16 + 8 + 8 + 8, TAG_LEN = 16, TOKEN_LEN = PAYLOAD_LEN + TAG_LEN;
+
+function verify(key, tok, nowSec = Math.floor(Date.now() / 1000)) {
+  const raw = Buffer.from(tok, "base64url");
+  if (raw.length !== TOKEN_LEN || raw[0] !== 0x01) throw new Error("bad token");
+  const tag = createHmac("sha256", key).update(raw.subarray(0, PAYLOAD_LEN)).digest().subarray(0, TAG_LEN);
+  if (!timingSafeEqual(tag, raw.subarray(PAYLOAD_LEN))) throw new Error("bad token"); // constant time
+  if (BigInt(nowSec) >= raw.readBigUInt64BE(25)) throw new Error("bad token");        // expired
+  return { orderId: raw.subarray(1, 17), amountMinor: raw.readBigUInt64BE(17) };
+}
+```
+
+</details>
+
+<details>
+<summary>Rust (hmac 0.12, sha2 0.10, base64 0.22)</summary>
+
+```rust
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
+const PAYLOAD_LEN: usize = 1 + 16 + 8 + 8 + 8;
+const TAG_LEN: usize = 16;
+
+fn verify(key: &[u8], tok: &str, now_unix: u64) -> Option<([u8; 16], u64)> {
+    let raw = URL_SAFE_NO_PAD.decode(tok).ok()?;
+    if raw.len() != PAYLOAD_LEN + TAG_LEN || raw[0] != 0x01 {
+        return None;
+    }
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).ok()?;
+    mac.update(&raw[..PAYLOAD_LEN]);
+    mac.verify_truncated_left(&raw[PAYLOAD_LEN..]).ok()?; // constant time, left-most bytes
+    let expiry = u64::from_be_bytes(raw[25..33].try_into().ok()?);
+    if now_unix >= expiry {
+        return None;
+    }
+    let order_id: [u8; 16] = raw[1..17].try_into().ok()?;
+    Some((order_id, u64::from_be_bytes(raw[17..25].try_into().ok()?)))
+}
+```
+
+</details>
+
+<details>
+<summary>C++ (libsodium)</summary>
+
+```cpp
+#include <sodium.h>   // call sodium_init() once at startup
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <utility>
+
+constexpr size_t PAYLOAD_LEN = 1 + 16 + 8 + 8 + 8, TAG_LEN = 16, TOKEN_LEN = PAYLOAD_LEN + TAG_LEN;
+
+static uint64_t be64(const unsigned char* p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v = (v << 8) | p[i];
+    return v;
+}
+
+// {order id, amount in minor units} if the token is authentic, known and unexpired.
+std::optional<std::pair<std::string, uint64_t>>
+verify(const unsigned char* key, size_t key_len, const std::string& tok, uint64_t now_unix) {
+    unsigned char raw[TOKEN_LEN + 1];
+    size_t raw_len = 0;
+    if (sodium_base642bin(raw, sizeof raw, tok.data(), tok.size(), nullptr, &raw_len, nullptr,
+                          sodium_base64_VARIANT_URLSAFE_NO_PADDING) != 0
+        || raw_len != TOKEN_LEN || raw[0] != 0x01) {
+        return std::nullopt;
+    }
+    unsigned char full[crypto_auth_hmacsha256_BYTES];
+    crypto_auth_hmacsha256_state st;
+    crypto_auth_hmacsha256_init(&st, key, key_len);
+    crypto_auth_hmacsha256_update(&st, raw, PAYLOAD_LEN);
+    crypto_auth_hmacsha256_final(&st, full);
+    if (sodium_memcmp(full, raw + PAYLOAD_LEN, TAG_LEN) != 0) return std::nullopt; // constant time
+    if (now_unix >= be64(raw + 25)) return std::nullopt;                             // expired
+    return std::make_pair(std::string(reinterpret_cast<char*>(raw + 1), 16), be64(raw + 17));
+}
+```
+
+</details>
+
+**How short can the tag be?** Truncating means keeping the left-most bits of the full HMAC
+output, and the sources don't agree on the floor:
+
+| Source | Says |
+|---|---|
+| [RFC 2104 §5](https://www.rfc-editor.org/rfc/rfc2104#section-5) | Output length "not less than half the length of the hash output" and "not less than 80 bits". For SHA-256, that's **128 bits** |
+| [NIST SP 800-107 Rev. 1](https://csrc.nist.gov/pubs/sp/800/107/r1/final) §5.3.3, §5.3.5 | Truncated output "shall be no less than 32 bits"; "A commonly acceptable length for the MacTag is 64 bits; MacTags with lengths shorter than 64 bits are discouraged" |
+
+The two are answering different questions. NIST's §5.3.5 frames it as a forgery budget: if
+a system allows 2ᵗ failed verifications per key, the chance of accepting a forgery is
+2^−(λ−t) for a λ-bit tag. A 96-bit tag after 2³⁵ failed tries still leaves 2⁻⁶¹ (its
+Table 2). RFC 2104's half-the-hash rule is a blanket recommendation that doesn't depend on
+counting attempts. So a 96-bit tag clears NIST's guidance comfortably and sits below RFC
+2104's for SHA-256. My recommendation: 128 bits unless bytes are genuinely scarce, and if
+you go shorter, make sure guesses are bounded — rate limits, expiry, key rotation — because
+that's the assumption the shorter tag rests on. (NIST decided in 2022 to withdraw SP 800-107
+Rev. 1, and its page still lists it as Final pending that; check its status before citing it
+as current.)
+
+Three things a MAC-signed token does **not** do, which people assume it does:
+
+- **It isn't encrypted.** Anyone holding it can decode the base64url and read every field.
+  A test token for order id `order-0000000017` began `AW9yZGVyLTAwMDAwMDAwMTc…`, which
+  decodes straight back to the version byte and the id. Put nothing in it you wouldn't show
+  the client.
+- **It doesn't stop replay.** A valid token stays valid until it expires. If step two must
+  happen at most once, record used nonces (or order ids) and reject repeats.
+- **It doesn't separate purposes by itself.** If two kinds of token share a key and could
+  share a length, one can be presented as the other. Use a different key per purpose, or a
+  purpose byte inside the MAC — the same idea as SSH's namespace ([file 03 §3.5](03-ssh-signatures.md)).
+
+**When to stop hand-rolling.** This design is fine when one team writes both the minter and
+the verifier and size matters. Once other teams, other languages or other organisations
+have to parse or verify the token, use a standard format — a JWS/JWT
+([RFC 7515](https://www.rfc-editor.org/rfc/rfc7515), with `HS256` from
+[RFC 7518 §3.2](https://www.rfc-editor.org/rfc/rfc7518#section-3.2), which requires a key
+at least as long as the hash output) — and accept the larger token. And once the verifier
+is a *different* party from the minter, read §1.6 first: you probably want a signature, not
+a MAC.
+
 ## 1.6 Digital signatures: split the key in two
 
 The fix is to split the key: one half creates, the other half checks, and you can't derive
@@ -271,5 +473,11 @@ not a check.
 6. Someone argues "a signature is just a hash plus a key, so it's no stronger than an HMAC
    with a well-guarded key." What's the precise difference in *who can check* and *who
    could have created*, and why does that difference matter more than key strength?
+7. Take the token from §1.5.1 but imagine it had no version byte, and you now need to add a
+   field. A colleague proposes shrinking the nonce from 8 bytes to 6 to make room, and
+   reading the new field as "0 means the old behaviour". What goes wrong for tokens already
+   in flight, and what would a version byte have changed? Separately, they want to cut the
+   tag to 8 bytes to shorten URLs: what does that cost, and what other property of the
+   system decides whether it's acceptable?
 
-(Answers in [`07-exercises.md`](07-exercises.md).)
+(Answers in [`08-exercises.md`](08-exercises.md).)

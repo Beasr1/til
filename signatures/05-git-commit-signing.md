@@ -170,4 +170,4 @@ Good "git" signature for alice@example.com with ED25519 key SHA256:30/gF7srI49Gp
    against a plain `ssh-keygen -Y verify` of a file signature — and what does that tell
    you about who should choose the verification time?
 
-(Answers in [`07-exercises.md`](07-exercises.md).)
+(Answers in [`08-exercises.md`](08-exercises.md).)

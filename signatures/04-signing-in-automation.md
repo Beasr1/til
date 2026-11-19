@@ -225,6 +225,138 @@ for humans and provide the base64 for the actual verification.
 `base64` used for these examples. Other platforms' `base64` tools vary; check the ones your
 readers use.)
 
+## 4.8 Keys between services: why shared secrets drift and leak
+
+So far the signer has been a pipeline and the verifier a person. The same choices come up
+when one *service* mints tokens and another verifies them — a job queue whose workers
+check that each job was issued by the API, say. The quick way is a symmetric token
+(`HS256`, an HMAC; [RFC 7518 §3.2](https://www.rfc-editor.org/rfc/rfc7518#section-3.2)) with
+the same secret configured in both services. It works on day one. Two things go wrong
+later, and both follow from [file 01 §1.5](01-foundations.md): with a MAC, every verifier
+holds the minting key.
+
+**It drifts.** The secret lives in two places — two environment variables with different
+names, in two deployment configs, owned by two teams. Nothing outside your tests checks
+they're equal. One gets rotated, or a test harness leaves a placeholder in one of them, and
+the verifier rejects every token. That's the *good* outcome, because it's loud. The bad one
+is someone "fixing" it by setting both to the same easy value.
+
+**It leaks by design when a verifier is a client.** Put an HMAC secret in a mobile app, a
+browser bundle or an SDK running on field devices, and anyone who extracts it from one copy
+can mint valid tokens for the whole fleet. A secret shipped to clients is a public value
+with extra steps.
+
+| Fix | What it does | Good for |
+|---|---|---|
+| **One source** | Both services read the same entry in a secret store, never two copies | Two server-side services you control |
+| **Pairing check at startup** | The service proves its keys agree before taking traffic, and refuses to start if not | Any of these; it turns drift into a deploy failure |
+| **Asymmetric keys** (`ES256`, RFC 7518 §3.4; or EdDSA) | Only the minter holds the private key; verifiers get the public key, which needn't be secret | Anything with more than one verifier, or any verifier you don't fully trust |
+| **Signer behind an interface** | Clients build the bytes to be signed; a trusted host holds the key and returns the signature | Clients that must produce tokens but can't be trusted with a key |
+
+Asymmetric keys are the structural fix. A public key can be shipped in every config, every
+client and every repository without harm, so "keeping two copies in sync" stops being a
+security problem: a wrong copy fails verification, it doesn't let anyone forge. The private
+key lives in one place.
+
+The pairing check is file 04 §4.5's rule moved to startup: sign a probe with the key you
+hold, verify it against the public key **from where your verifiers get it** — not one
+derived from your own private key, which always matches.
+
+```go
+// checkPairing proves, at startup, that the key this service signs with matches the
+// public key verifiers were given. `published` must come from where verifiers get it.
+func checkPairing(signer crypto.Signer, published ed25519.PublicKey) error {
+	probe := []byte("startup pairing probe")
+	sig, err := signer.Sign(nil, probe, crypto.Hash(0)) // Hash(0): pure Ed25519, signs the message itself
+	if err != nil {
+		return err
+	}
+	if !ed25519.Verify(published, probe, sig) {
+		return errors.New("signing key does not match the published public key")
+	}
+	return nil
+}
+```
+
+Taking a `crypto.Signer` rather than a raw private key is deliberate. It's Go's standard
+interface for "something that can sign" — an in-memory `ed25519.PrivateKey` satisfies it,
+and so can a wrapper around a cloud KMS or an HSM, where the key never enters your process.
+That's the **signer interface** row of the table: code that needs signatures depends on the
+interface, and only the trusted host holds the key. For a client SDK this means the SDK
+assembles the JWS signing input (`BASE64URL(header) . BASE64URL(payload)`, defined in
+[RFC 7515 §2](https://www.rfc-editor.org/rfc/rfc7515#section-2) and signed in §5.1)
+and hands it to a host-provided signer that forwards it to a backend; the resulting tokens
+are byte-identical to before, and the backend that verifies them doesn't change.
+
+All four versions were run with a matching and a mismatched key pair.
+
+<details>
+<summary>JavaScript (Node)</summary>
+
+```js
+import { sign, verify } from "node:crypto";
+
+// privateKey and publishedKey are KeyObjects; publishedKey comes from where verifiers get it.
+function checkPairing(privateKey, publishedKey) {
+  const probe = Buffer.from("startup pairing probe");
+  const sig = sign(null, probe, privateKey);          // null algorithm for Ed25519
+  if (!verify(null, probe, publishedKey, sig)) {
+    throw new Error("signing key does not match the published public key");
+  }
+}
+```
+
+</details>
+
+<details>
+<summary>Rust (ed25519-dalek 2)</summary>
+
+```rust
+use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+
+/// `published` must come from where verifiers get it, not be derived from `signing_key`.
+fn check_pairing(signing_key: &SigningKey, published: &VerifyingKey) -> Result<(), String> {
+    let probe = b"startup pairing probe";
+    let sig = signing_key.sign(probe);
+    published
+        .verify(probe, &sig)
+        .map_err(|_| "signing key does not match the published public key".to_string())
+}
+```
+
+</details>
+
+<details>
+<summary>C++ (libsodium)</summary>
+
+```cpp
+#include <sodium.h>   // call sodium_init() once at startup
+#include <stdexcept>
+
+// sk: 64-byte libsodium secret key; published_pk: the public key verifiers were given.
+void check_pairing(const unsigned char sk[crypto_sign_SECRETKEYBYTES],
+                   const unsigned char published_pk[crypto_sign_PUBLICKEYBYTES]) {
+    static const unsigned char probe[] = "startup pairing probe";
+    unsigned char sig[crypto_sign_BYTES];
+    crypto_sign_detached(sig, nullptr, probe, sizeof probe - 1, sk);
+    if (crypto_sign_verify_detached(sig, probe, sizeof probe - 1, published_pk) != 0) {
+        throw std::runtime_error("signing key does not match the published public key");
+    }
+}
+```
+
+</details>
+
+> ⚠️ **Switching from `HS256` to an asymmetric algorithm opens a classic hole if the
+> verifier trusts the token's own `alg` header.** [RFC 8725 §2.1](https://www.rfc-editor.org/rfc/rfc8725#section-2.1)
+> describes it: an attacker changes `RS256` to `HS256`, and a careless library validates
+> the HMAC using "the RSA public key as the HMAC shared secret" — a key the attacker has,
+> because it's public. §3.1's rules close it: "Libraries MUST enable the caller to specify a
+> supported set of algorithms", and "each key MUST be used with exactly one algorithm".
+> Configure the verifier with the one algorithm it expects; never let the token choose.
+> And if you stay on `HS256`, §3.5 forbids using "human-memorizable passwords" directly as
+> the key — RFC 7518 §3.2 wants at least 256 bits for `HS256`.
+
 ---
 
 ## Check yourself
@@ -246,5 +378,11 @@ readers use.)
 6. A pipeline signs `notes.md`, then a formatting step strips trailing whitespace, then it
    publishes. Where must the verify gate go, and what would it report if it were placed
    before the formatter?
+7. An API mints `HS256` tokens and a fleet of workers verifies them, each worker reading
+   the secret from its own config. Give one failure that's loud and one that's silent and
+   dangerous. You move to `ES256`: what can now be distributed freely that couldn't before,
+   what new check must every verifier make that it didn't need with `HS256`, and why does a
+   startup pairing check have to use the public key from the verifiers' source rather than
+   one computed from the private key?
 
-(Answers in [`07-exercises.md`](07-exercises.md).)
+(Answers in [`08-exercises.md`](08-exercises.md).)

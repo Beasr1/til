@@ -1,4 +1,4 @@
-# 7. Exercises and answers
+# 8. Exercises and answers
 
 Try to answer before reading. Getting one wrong is data, not failure.
 
@@ -60,6 +60,28 @@ world without handing anyone the ability to create. That's what makes signatures
 third parties and disputes: a verifier can't have made the signature themselves. A
 perfectly guarded HMAC key still has to be *shared with every verifier*, so it can never
 give you that.
+
+**7. Adding a field without a version byte; an 8-byte tag.**
+
+Tokens minted before the change are still in flight, and they have the same length as new
+ones. The new verifier reads bytes that used to be the old token's nonce as the new field.
+The MAC still verifies — the bytes are authentic, just interpreted differently — so nothing
+flags it. "0 means the old behaviour" would only work if old tokens had zeros in that
+position, and they have random nonce bytes there: with a 2-byte field, only 1 old token in
+65,536 reads as 0. Nearly every in-flight token is silently misread as a new one with a
+random value in the new field. (You've also shortened the nonce, which matters if anything
+relies on it being unique.) A version byte inside the MAC removes the guessing: old tokens
+say `0x01` and are parsed with the old layout, new ones say `0x02`, and a verifier that
+sees a version it doesn't know rejects it.
+
+An 8-byte tag is 64 bits. Under NIST SP 800-107 Rev. 1 §5.3.5 the chance of accepting a
+forgery after 2ᵗ failed attempts is 2^−(64−t): after 2³⁵ guesses, 2⁻²⁹, from its Table 2.
+That's at NIST's "commonly acceptable" level and below RFC 2104's recommendation of half
+the hash output (128 bits for SHA-256). Whether it's acceptable depends on **how many
+guesses an attacker gets per key**: rate limiting on the verifying endpoint, the token's
+expiry, and how often the key rotates. A 64-bit tag on an endpoint that accepts unlimited
+verification attempts against one long-lived key is weaker than the same tag with a rate
+limit and monthly rotation.
 
 ---
 
@@ -235,6 +257,25 @@ match the pre-formatting bytes — and you'd publish formatted bytes that no rea
 verify. That's the reason for the rule "verify the bytes you publish, not an intermediate
 copy". Better still, fix the ordering so signing happens last, after all transformations.
 
+**7. `HS256` across a fleet, then `ES256`.**
+
+Loud: one worker's config holds a stale or placeholder secret after a rotation, so it
+rejects every token and its error rate spikes. Silent and dangerous: the secret leaks from
+any one worker (a log line, a debug dump, a compromised host), and since an HMAC key mints
+as well as verifies, the holder can now issue tokens every worker accepts — nobody sees a
+failure at all. The more verifiers, the more places it can leak from.
+
+With `ES256` the public key can go anywhere — every worker's config, a repository, a client
+— because it can only verify. A wrong copy produces rejections, not forgeries. The new
+check is **algorithm pinning** (RFC 8725 §3.1): each verifier must be configured to accept
+only `ES256` for that key and ignore the token's `alg` header, otherwise an attacker can
+relabel a token `HS256` and a careless library will HMAC-verify it using the public key —
+which everyone has — as the secret (§2.1). With `HS256` alone there was no public key to
+abuse that way. The pairing check must use the verifiers' public key because a public key
+derived from the service's own private key matches it by construction; the check would pass
+even if the private key were the wrong one, which is exactly the failure it exists to
+catch — the same reason as Q2 above.
+
 ---
 
 ## [File 05](05-git-commit-signing.md) — Commit signing with SSH keys
@@ -284,6 +325,86 @@ should never be the party whose signature you're checking.
 
 ---
 
+## [File 06](06-signing-json.md) — Signing JSON across languages
+
+**1. Go signs, Node re-serialises.**
+
+Go's `Marshal` HTML-escapes `&` inside strings, so the signed bytes contain
+`Tom & Jerry` — six characters where the ampersand was. Node's `JSON.parse` turns
+`&` back into `&`, and `JSON.stringify` emits a bare `&`. The verifier hashes
+`Tom & Jerry`, a different byte string, and the signature fails. Plain ASCII letters and
+numbers pass only because neither library escapes or reformats them.
+
+The struct change doesn't break it, perhaps surprisingly. `JSON.parse` creates properties
+in the order they appear in the text, and `JSON.stringify` emits them in that order (for
+non-integer keys), so Go's `{"zeta":…,"alpha":…}` survives the round trip unchanged. Key
+order breaks the moment the verifier builds the object from anything *other* than the
+received text — a typed class with its own field order, an object assembled from a
+database row, a "canonicaliser" that sorts keys while Go doesn't. That's the real lesson:
+the verifier is reconstructing bytes from data, and every reconstruction is a chance to
+differ. It should verify the received body and parse afterwards.
+
+**2. "Sort keys recursively on both sides."**
+
+Any three of: `<`, `>` or `&` in a string (Go escapes them by default; Node and Python
+don't — `SetEscapeHTML(false)` on a Go `Encoder` turns it off); a non-ASCII character such
+as `ë` (Python escapes it to `ë` because `ensure_ascii=True` is the default); any
+payload at all with Python's defaults, because `separators` defaults to `", "` and `": "` —
+with spaces; a float like `1.0` (Python writes `1.0`, Go and Node write `1`); an integer
+above 2⁵³ (Python keeps it exact, Go-into-`any` and Node round it to a double); and Go's
+`Encoder.Encode` adding a trailing newline that `Marshal` doesn't. Sorting fixes only key
+order.
+
+**3. Why shipping the bytes needs no canonicaliser.**
+
+Because nobody ever recreates the signed bytes from data. The signer serialises once,
+signs that byte string, and sends that same byte string; the verifier checks the signature
+over the bytes it received, then parses. Canonicalisation exists to let two parties
+*rebuild* identical bytes independently; here they never need to. What can still break it
+is anything that rewrites the body in between: a proxy or gateway that re-encodes,
+recompresses or pretty-prints JSON; a web framework that parses the request body and hands
+your handler a re-serialised copy; a logging or validation middleware that "normalises" the
+payload. Each delivers different bytes for the same data, and the signature fails.
+
+**4. The 20-digit account ID.**
+
+`12345678901234567890` exceeds 2⁵³, so it can't be represented exactly as an IEEE 754
+double. Whichever side first parsed it into a double — a JS verifier, or a Go service
+decoding into `any` — rounded it to `12345678901234567000` *at parse time*, before
+canonicalisation ran. JCS then canonicalised the rounded number faithfully, producing bytes
+that differ from what the signer canonicalised from the exact value. Canonicalisation can
+only make equal data produce equal bytes; here the data was no longer equal. RFC 8785 §3.1
+requires I-JSON input (numbers representable as doubles), and Appendix D says numbers that
+don't fit "MUST be wrapped using the JSON string type" — so the schema should carry IDs like
+this as strings. It "worked for months" because no earlier ID was that large.
+
+**5. Half the ECDSA signatures fail.**
+
+Most likely the signer doesn't normalise to **low-S**. For a valid `(r, s)`, `(r, n − s)` is
+also valid; libsecp256k1's verify accepts only the lower one, to refuse malleable
+signatures. With a random nonce, `s` lands in the upper half about half the time, so
+roughly half the signatures are rejected — and a given signature fails on every retry,
+because retrying verification doesn't change its `s`. Fix on the signer: normalise
+(replace `s` by `n − s` when `s > n/2`) before sending. Fix on the verifier, if you can't
+change the signer: call `secp256k1_ecdsa_signature_normalize` before verifying, accepting
+that you now accept malleable signatures. A consistent 100% failure with 65-byte signatures
+points instead to an encoding mismatch: the signer emits `r‖s‖v` with a recovery byte
+(go-ethereum's `crypto.Sign` does) and the verifier expects the 64-byte `r‖s` form. Strip
+or use the recovery byte deliberately, and write the encoding into the spec and the test
+vectors.
+
+**6. The silent unsigned fallback.**
+
+The attacker modifies a response and deletes the signature field. The verifier sees no
+signature, treats that as "nothing to check", and accepts the forged body. No key needed:
+the fallback turned "signature invalid" into "signature absent", and absence was trusted.
+Two changes close it: verifiers treat a **missing** signature exactly like an invalid one
+(reject), and the signer's unsigned mode becomes an explicit configuration choice — startup
+fails when a key is expected but missing, and a deliberately enabled unsigned mode is logged
+and alerted on — so it can't be reached by a typo in a secret name.
+
+---
+
 ## Things to try
 
 1. **Rebuild §1.3 yourself.** Copy the CRC-24 C code from RFC 9580 §6.1.1, check it gives
@@ -304,6 +425,18 @@ should never be the party whose signature you're checking.
 6. **Cross-check a real key.** Pick a public GitHub user who signs commits, fetch
    `GET /users/{username}/ssh_signing_keys`, build an `allowed_signers` line, and verify one
    of their commits locally with `git verify-commit`.
+7. **Make three serialisers disagree.** Take one JSON document containing `&`, an accented
+   name, `1.0` and a 20-digit integer, and round-trip it through Go `json.Marshal`, Node
+   `JSON.stringify` and one other language's default serialiser. Diff the bytes. Then run
+   the same document through a JCS library in two languages and confirm the outputs match
+   — except where the big integer was already rounded.
+8. **Break and fix a token.** Build the §1.5.1 token, then add a field two ways: by
+   repurposing nonce bytes, and with a version byte. Mint tokens before the change and
+   verify them after, and see which design misreads them.
+9. **Watch the algorithm-confusion check.** With a JWT library in your language, sign an
+   `ES256` token, then hand-craft an `HS256` token using the public key bytes as the
+   secret. Confirm the verifier rejects it when you pin the algorithm, and find out whether
+   it does when you don't.
 
 ---
 
@@ -322,4 +455,7 @@ should never be the party whose signature you're checking.
   ECDSA nonces were reused?"
 - "How do webhook providers typically structure HMAC signatures — and how do they stop
   replays?"
+- "Why does JCS sort keys by UTF-16 code units, and when would that differ from a byte sort?"
+- "Should this service-to-service token be a JWT, a hand-rolled MAC token, or an HTTP
+  message signature (RFC 9421)? Here's the setup: …"
 - "Is my mental model right? Here's what I think a signature proves: …"

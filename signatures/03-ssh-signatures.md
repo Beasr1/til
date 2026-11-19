@@ -332,4 +332,4 @@ key rotation after a leak is subtler than it looks ([file 04 §4.6](04-signing-i
    allowed_signers line>`". A reader follows those instructions exactly. What has the
    reader proven, and what one extra step would change that?
 
-(Answers in [`07-exercises.md`](07-exercises.md).)
+(Answers in [`08-exercises.md`](08-exercises.md).)
