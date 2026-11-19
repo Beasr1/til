@@ -5,14 +5,16 @@ confidently (HTTP servers, CLIs, concurrent services) and is about to build netw
 concurrent programs in Rust: async networking with tokio, plus work on dedicated OS
 threads. It covers the language's working model, ownership and borrowing, errors, traits,
 shared state, async, the tokio concurrency patterns that replace channels and `context`,
-and the Cargo habits that keep a project healthy.
+the Cargo habits that keep a project healthy, and how to call C libraries without losing
+the guarantees at the boundary.
 
 **This is reference learning material.** It's about Rust, tokio and Go as documented
 upstream, not about any particular program. Claims are checked against the Rust Book, the
 Reference, the standard library and crate documentation, and the Go spec and blog. Where
 behaviour mattered and the docs left room for doubt, I compiled or ran a small program
 and show its output, labelled with the versions used: **rustc 1.96.0, tokio 1.53.2,
-tokio-util 0.7.19, anyhow 1.0.104, thiserror 2.0.21, Go 1.24.4, on macOS arm64.** Timings
+tokio-util 0.7.19, anyhow 1.0.104, thiserror 2.0.21, libloading 0.8.9, Go 1.24.4, on
+macOS arm64.** Timings
 are from one laptop and are there to show a shape, not to be quoted as rates. Compiler
 output is trimmed to the lines that matter.
 
@@ -21,7 +23,7 @@ I wrote this as a teacher, not as a peer. That means:
 - I explain things you might already know. Skim if so.
 - Why before how: the Go habit, then what Rust does instead and what it buys.
 - Every chapter ends with **Check yourself** questions. Answers are in
-  [10-exercises.md](10-exercises.md).
+  [11-exercises.md](11-exercises.md).
 - Go-equivalent tables everywhere, because that's the fastest way in for this reader.
 
 ## The one thing to understand first
@@ -53,6 +55,9 @@ Every chapter is one face of that sentence.
 | [The Cargo Book](https://doc.rust-lang.org/cargo/) | Targets, workspaces, features and unification, resolver versions, profiles, `[lints]` |
 | [Clippy docs](https://doc.rust-lang.org/clippy/) | Lint groups and default levels |
 | [The Go spec](https://go.dev/ref/spec), [Go blog on errors](https://go.dev/blog/go1.13-errors), [loop variables](https://go.dev/blog/loopvar-preview), [defer](https://go.dev/blog/defer-panic-and-recover), [Go modules reference](https://go.dev/ref/mod), [generics implementation](https://github.com/golang/proposal/blob/master/design/generics-implementation-dictionaries-go1.18.md) | The Go side of every comparison |
+| [Reference: external blocks](https://doc.rust-lang.org/reference/items/external-blocks.html), [Edition Guide: Rust 2024](https://doc.rust-lang.org/edition-guide/rust-2024/index.html), [`libloading`](https://docs.rs/libloading/) | `unsafe extern`, ABI strings, `safe` items, the 2024 unsafe rules, what loading a library runs |
+| Microsoft docs: [`__cdecl`](https://learn.microsoft.com/en-us/cpp/cpp/cdecl), [`__stdcall`](https://learn.microsoft.com/en-us/cpp/cpp/stdcall), [x64 calling convention](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention), [DLL search order](https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order), [CRT objects across DLL boundaries](https://learn.microsoft.com/en-us/cpp/c-runtime-library/potential-errors-passing-crt-objects-across-dll-boundaries) | Who pops the stack, why x64 hides a wrong convention, DLL planting, why each CRT copy needs its own free |
+| [libusb asynchronous I/O](https://libusb.sourceforge.io/api-1.0/group__libusb__asyncio.html) and [cmd/cgo](https://pkg.go.dev/cmd/cgo) | Memory lent to a library until its callback; the Go side of FFI ownership |
 | [Ross Bencina, "Real-time audio programming 101"](http://www.rossbencina.com/code/real-time-audio-programming-101-time-waits-for-nothing) (2011) and [`rtrb`](https://docs.rs/rtrb/latest/rtrb/) | What a real-time thread must not do, and a lock-free ring buffer for it |
 
 ## Reading order
@@ -68,7 +73,7 @@ Every chapter is one face of that sentence.
 | # | File | After this you can… |
 |---|------|---------------------|
 | 2 | [Ownership, moves, borrowing and lifetimes](02-ownership-and-borrowing.md) | ⭐ Predict which borrow-checker error a piece of code will get, name the Go bug each rule prevents, and fix the common errors without cloning everything |
-| 3 | [Errors](03-errors.md) | Translate Go error handling to `Result` and `?`, choose between `thiserror` and `anyhow`, and say what a panic does in a thread or task |
+| 3 | [Errors](03-errors.md) | Translate Go error handling to `Result` and `?`, choose between `thiserror` and `anyhow`, and say what a panic does in a thread or task, a wasm page and a daemon's crash records |
 | 4 | [Traits and generics, and `Send`/`Sync`](04-traits-and-generics.md) | Choose static or dynamic dispatch, know why an `async fn` trait can't be `dyn`, and read a `Send` error |
 
 ### Part 2 — Concurrency
@@ -77,24 +82,32 @@ Every chapter is one face of that sentence.
 |---|------|---------------------|
 | 5 | [Shared state, threads and `Drop`](05-shared-state-and-threads.md) | Pick between `Box`, `Rc`, `Arc`, `Mutex`, `RefCell` and atomics; use OS and scoped threads; replace `defer` with `Drop` |
 | 6 | [Async and tokio](06-async-and-tokio.md) | ⭐ Explain lazy futures and cooperative scheduling, satisfy `Send + 'static` on spawn, and find and fix blocking in async code |
-| 7 | [Concurrency patterns](07-concurrency-patterns.md) | ⭐ Choose the tokio channel for a Go pattern, write cancellation-safe `select!` loops, shut down gracefully, and hand data between real-time threads and tasks |
+| 7 | [Concurrency patterns](07-concurrency-patterns.md) | ⭐ Choose the tokio channel for a Go pattern, write cancellation-safe `select!` loops, shut down gracefully, and hand data between real-time threads and tasks, and bound blocking foreign calls you can't cancel |
 
 ### Part 3 — Projects
 
 | # | File | After this you can… |
 |---|------|---------------------|
-| 8 | [Cargo and project hygiene](08-cargo-and-project-hygiene.md) | Lay out a lib-plus-bin project and a workspace, avoid the feature-unification trap, test with paused time, and set up fmt and Clippy in CI |
+| 8 | [Cargo and project hygiene](08-cargo-and-project-hygiene.md) | Lay out a lib-plus-bin project and a workspace, avoid the feature-unification trap, test with paused time, and set up fmt and Clippy in CI that compiles every target, builds every feature combination, and writes target-correct, deterministic build scripts |
+
+### Part 4 — Beyond safe Rust
+
+| # | File | After this you can… |
+|---|------|---------------------|
+| 9 | [Calling C: FFI, `unsafe` and dynamic loading](09-calling-c.md) | Declare foreign functions with the right ABI, load a vendor library safely, wrap a C API in typestate whose transitions check status codes, bound untrusted sizes, and say who frees each pointer, including memory lent for asynchronous completion |
 
 ### Reference
 
 | # | File | |
 |---|------|---|
-| 9 | [Glossary](09-glossary.md) | Look things up |
-| 10 | [Exercises & answers](10-exercises.md) | Worked answers to every Check yourself, things to try, questions to ask |
+| 10 | [Glossary](10-glossary.md) | Look things up |
+| 11 | [Exercises & answers](11-exercises.md) | Worked answers to every Check yourself, things to try, questions to ask |
 
 Read 1 first, then 2. Chapters 3 and 4 can be read in either order. Chapter 5 needs 2
 and 4 (§4.6 on `Send`/`Sync`). Chapter 6 needs 4 and 5; chapter 7 needs 6. Chapter 8 is
 independent after chapter 1, and is worth reading before you set up a real project.
+Chapter 9 needs 2 (especially §2.6) and 3, and is the one to read before you wrap a C
+library or a vendor SDK.
 
 **Background, not prerequisites,** in sibling courses:
 [interview/cs-fundamentals 02](../interview/cs-fundamentals/02-processes-and-threads.md)
@@ -109,7 +122,7 @@ This course links to them instead of re-teaching them.
 ### Scope, and what changed from the first outline
 
 The outline this course started from had eight topic chapters; they're all here, with
-three adjustments:
+these adjustments:
 
 - **Closures** were missing. They're split between chapter 2 §2.7 (what they capture, and
   `move`), because that's an ownership question, and chapter 4 §4.5 (the `Fn` traits),
@@ -122,8 +135,11 @@ three adjustments:
   that combines tokio networking with work on dedicated threads will hit it early, and it's
   where the Go intuition (just send on a channel) is most wrong.
 
-**Not yet written, and belonging here:** `unsafe` and FFI (calling C libraries, which
-real-time and audio APIs often are), macros, `Pin` in depth, iterators and closures as a
+- **`unsafe` and FFI** were on the "not yet written" list and became chapter 9. It covers
+  calling C from Rust (and exporting Rust to C) as far as ownership, ABI and loading go;
+  writing `unsafe` data structures and the aliasing model are still out of scope.
+
+**Not yet written, and belonging here:** macros, `Pin` in depth, iterators and closures as a
 performance topic, `serde`, structured logging with `tracing`, and profiling
 (`tokio-console`, `perf`, flame graphs). Each would get the next free chapter number.
 
@@ -134,42 +150,57 @@ performance topic, `serde`, structured logging with `tracing`, and profiling
   the `Send` errors.
 - **Fighting the borrow checker:** chapter 2 §2.8, then §2.6 on lifetimes.
 - **Mixing async with dedicated threads (audio, devices, blocking libraries):** chapter 6
-  §6.5, then chapter 7 §7.8.
+  §6.5, then chapter 7 §7.8 and §7.9.
+- **Wrapping a C library or vendor SDK this week:** chapter 9 §9.2–9.4 and §9.6, with
+  chapter 2 §2.6 open for the guard lifetimes.
 
 ## The one-paragraph summary of everything
 
-Rust moves Go's run-time work to compile time or into libraries. Every value has one
-owner and is dropped when the owner's scope ends, so there's no GC; assignment moves
-rather than half-copies; and borrows follow "one writer or many readers", which rules out
-stale pointers after a reallocation and, across threads, data races. Lifetimes are the
+Rust moves Go's run-time work to compile time or into libraries. Every value has one owner
+and is dropped when the owner's scope ends, so there's no GC; assignment moves rather than
+half-copies; and borrows follow "one writer or many readers", which rules out stale
+pointers after a reallocation and, across threads, data races. Lifetimes are the
 compiler's names for how long borrows are valid; they describe, never extend. Errors are
 `Result` values that can't be used without checking, `?` returns early and converts with
 `From`, `thiserror` builds enums for callers that branch and `anyhow` adds context for
 callers that don't. A panic kills only its thread or task, which is more available than Go
 and quieter. Traits are interfaces implemented explicitly; generics are monomorphised
-(static dispatch) and `dyn Trait` uses a vtable like a Go interface; traits with
-`async fn` can't be `dyn`. `Send` and `Sync` are marker traits derived from a type's
-fields, and they are how the compiler keeps `Rc`, `RefCell` and mutex guards on one
-thread. Shared ownership is `Rc` or `Arc`; mutation through sharing is `RefCell`, `Mutex`
-or atomics, and `Mutex<T>` owns its data so you can't skip the lock, though deadlock is
-still yours to prevent. Cleanup is `Drop`, scoped to blocks and owned values, and
-`let _ =` drops immediately. Async functions return lazy futures compiled to state
-machines; tokio runs them as tasks, cooperatively, so anything that runs long without an
-`.await` (sync I/O, `thread::sleep`, heavy CPU) stalls the worker. Use `spawn_blocking`
-for short blocking work and a dedicated thread for long-lived loops. `tokio::spawn` needs
-`Send + 'static`, which in practice means nothing non-`Send`, such as a std
-`MutexGuard`, may be alive across an `.await`. The std mutex is usually right in async
-code. tokio has a channel per pattern (`mpsc`, `oneshot`, `broadcast`, `watch`); channels
-close when every sender is dropped, never with a panic. `select!` drops the losing
-futures, so every branch in a loop must be cancellation safe, and long-lived futures such
-as deadlines are created once, pinned and polled by `&mut`. `CancellationToken` is
-`context`; dropping or aborting a future is forced cancellation with no Go equivalent;
-`JoinSet` aborts its tasks when dropped. Threads that must never wait hand data over with
-`try_send` or a preallocated lock-free ring buffer, never a lock or an allocation. Cargo
-picks the newest compatible versions, so commit `Cargo.lock`; features are unified across
-the graph and must be additive; put code in `lib.rs` so it can be integration-tested;
-paused time makes timeout tests instant; and debug builds panic on overflow where release
-builds wrap.
+(static dispatch) and `dyn Trait` uses a vtable like a Go interface; traits with `async
+fn` can't be `dyn`. `Send` and `Sync` are marker traits derived from a type's fields, and
+they are how the compiler keeps `Rc`, `RefCell` and mutex guards on one thread. Shared
+ownership is `Rc` or `Arc`; mutation through sharing is `RefCell`, `Mutex` or atomics, and
+`Mutex<T>` owns its data so you can't skip the lock, though deadlock is still yours to
+prevent. Cleanup is `Drop`, scoped to blocks and owned values, and `let _ =` drops
+immediately. Async functions return lazy futures compiled to state machines; tokio runs
+them as tasks, cooperatively, so anything that runs long without an `.await` (sync I/O,
+`thread::sleep`, heavy CPU) stalls the worker. Use `spawn_blocking` for short blocking
+work and a dedicated thread for long-lived loops. `tokio::spawn` needs `Send + 'static`,
+which in practice means nothing non-`Send`, such as a std `MutexGuard`, may be alive
+across an `.await`. The std mutex is usually right in async code. tokio has a channel per
+pattern (`mpsc`, `oneshot`, `broadcast`, `watch`); channels close when every sender is
+dropped, never with a panic. `select!` drops the losing futures, so every branch in a loop
+must be cancellation safe, and long-lived futures such as deadlines are created once,
+pinned and polled by `&mut`. `CancellationToken` is `context`; dropping or aborting a
+future is forced cancellation with no Go equivalent; `JoinSet` aborts its tasks when
+dropped. Threads that must never wait hand data over with `try_send` or a preallocated
+lock-free ring buffer, never a lock or an allocation. Cargo picks the newest compatible
+versions, so commit `Cargo.lock`; features are unified across the graph and must be
+additive; put code in `lib.rs` so it can be integration-tested; paused time makes timeout
+tests instant; and debug builds panic on overflow where release builds wrap. At a C
+boundary the compiler believes your declarations: copy the calling convention from the
+header (`extern "system"` for `__stdcall`, even where 64-bit hides the difference), load
+libraries only from trusted full paths because loading runs their code, keep symbol names
+in one reviewed table, make typestate transitions check every status code, bound untrusted
+sizes because allocation failure aborts, free memory with the allocating library's own
+free function, and leak rather than free memory a library may still complete into. A
+blocking foreign call can't be cancelled, so run it on a thread you can abandon and bound
+it from the caller; a connect proves only that the kernel queued you, so every request
+gets its own deadline. On wasm a panic aborts the whole instance, so "impossible" failures
+return errors and fail closed; on a daemon an unwinding panic leaves no core dump, so
+install a panic hook. In CI, compile and run every target (`--all-targets`), build each
+feature combination, never skip a build because the output exists, read
+`CARGO_CFG_TARGET_*` rather than `#[cfg]` in build scripts, and never generate output by
+iterating a `HashMap`.
 
 ## How to use me
 
@@ -182,4 +213,6 @@ Ask me things like:
 - "Should this be `Arc<Mutex<T>>`, an owning task, or an atomic?"
 - "Design the error types for this module. Who will match on what?"
 - "Review this Cargo workspace for feature and lockfile problems."
+- "Here's a C header and my `extern` declarations. Check the types, names and ABI line by
+  line."
 - "Is my mental model right? Here's what I think happens: …"

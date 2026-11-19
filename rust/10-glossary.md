@@ -1,4 +1,4 @@
-# 9. Glossary
+# 10. Glossary
 
 Reference, not reading. Each entry points at the chapter that explains it. Where a Go
 term is the nearest equivalent, it's in the meaning.
@@ -6,6 +6,8 @@ term is the nearest equivalent, it's in the meaning.
 | Term | Meaning | Where |
 |---|---|---|
 | **`'static`** | As a bound (`T: 'static`): the value holds no borrowed references, so it's fine to keep for ever. Not "lives for ever" | [02](02-ownership-and-borrowing.md), [06](06-async-and-tokio.md) |
+| **ABI string** | The `"C"` or `"system"` in `extern "C"`: the calling convention both sides of a foreign call must agree on. Never checked | [09](09-calling-c.md) |
+| **Abandon and bound** | Running an uncancellable call on its own thread and waiting with a deadline; on overrun the caller gives up on the thread, which finishes or leaks on its own | [07](07-concurrency-patterns.md) |
 | **Aliasing XOR mutation** | Data may be shared or mutated, never both at once; the borrowing rule in one phrase | [02](02-ownership-and-borrowing.md) |
 | **`anyhow`** | Crate providing one catch-all error type plus `.context()`; for application code | [03](03-errors.md) |
 | **`Arc<T>`** | Atomically reference-counted shared ownership; usable across threads. Gives `&T` only | [05](05-shared-state-and-threads.md) |
@@ -20,6 +22,7 @@ term is the nearest equivalent, it's in the meaning.
 | **`broadcast`** | tokio channel where every receiver gets every value; slow receivers get `Lagged` | [07](07-concurrency-patterns.md) |
 | **`CancellationToken`** | tokio-util type for cooperative cancellation; the nearest thing to `context.WithCancel` | [07](07-concurrency-patterns.md) |
 | **Cancellation safe** | A future that can be dropped before completing and recreated without losing anything | [07](07-concurrency-patterns.md) |
+| **Calling convention** | Where arguments and return values go and who cleans the stack. `__cdecl` and `__stdcall` differ on 32-bit x86 and are identical on x64 | [09](09-calling-c.md) |
 | **Cargo** | Rust's build tool and package manager: `go build`, `go test`, `go mod` in one | [01](01-foundations.md), [08](08-cargo-and-project-hygiene.md) |
 | **`Cargo.lock`** | Records the exact dependency versions Cargo resolved; makes builds reproducible | [08](08-cargo-and-project-hygiene.md) |
 | **`cargo check`** | Type- and borrow-check without generating code; the fast feedback loop | [01](01-foundations.md) |
@@ -29,6 +32,7 @@ term is the nearest equivalent, it's in the meaning.
 | **Cooperative scheduling** | Tasks run until they yield (at `.await`); the runtime can't preempt them. Goroutines are preempted | [06](06-async-and-tokio.md) |
 | **`Copy`** | Marker for plain values that are copied, not moved, on assignment | [02](02-ownership-and-borrowing.md) |
 | **Crate** | Rust's compilation unit: a library or a binary, built from one root file | [01](01-foundations.md) |
+| **`CString` / `CStr`** | Owned and borrowed NUL-terminated C strings. `into_raw` hands one to C; only `from_raw` in the same library may free it | [09](09-calling-c.md) |
 | **Data race** | Two threads accessing the same memory at once, at least one writing, unsynchronised. Impossible in safe Rust | [02](02-ownership-and-borrowing.md), [04](04-traits-and-generics.md) |
 | **`derive`** | Attribute asking the compiler to write trait impls: `#[derive(Debug, Clone)]` | [04](04-traits-and-generics.md) |
 | **Drop** | Running a value's destructor and freeing it when its owner goes out of scope; `Drop` is the trait | [02](02-ownership-and-borrowing.md), [05](05-shared-state-and-threads.md) |
@@ -36,14 +40,19 @@ term is the nearest equivalent, it's in the meaning.
 | **`dyn Trait`** | A trait object: data pointer plus vtable; dynamic dispatch, like a Go interface value | [04](04-traits-and-generics.md) |
 | **Edition** | Opt-in, per-crate language version (2021, 2024); not a toolchain minimum | [08](08-cargo-and-project-hygiene.md) |
 | **Elision** | Rules that let the compiler infer lifetimes in common signatures | [02](02-ownership-and-borrowing.md) |
+| **Extern block** | `unsafe extern "C" { … }`: declarations of foreign functions, which the compiler trusts. `unsafe` required from the 2024 edition | [09](09-calling-c.md) |
 | **Executor** | The part of a runtime that polls futures; tokio's scheduler | [06](06-async-and-tokio.md) |
+| **FFI** | Foreign function interface: calling C (or anything with a C ABI) from Rust, or exposing Rust to it. cgo is Go's | [09](09-calling-c.md) |
+| **Fail closed** | When a check can't be performed, treat the input as failing it. The opposite, fail open, is what an `unwrap_or(true)` gives you by accident | [03](03-errors.md) |
 | **Feature** | Named, additive compile-time option of a package; unified across the dependency graph | [08](08-cargo-and-project-hygiene.md) |
 | **`Fn` / `FnMut` / `FnOnce`** | Traits for closures that only read, mutate, or consume their captures | [04](04-traits-and-generics.md) |
 | **Future** | A value representing a computation in progress, driven by `poll`. Lazy: does nothing until polled | [06](06-async-and-tokio.md) |
+| **`handle_alloc_error`** | What runs when an allocation fails; with `std` it prints and aborts by default, so it can't be caught | [09](09-calling-c.md) |
 | **Interior mutability** | Mutation through a shared reference, with the check moved to run time (`RefCell`) or made safe by a lock or atomic | [05](05-shared-state-and-threads.md) |
 | **`JoinError`** | What awaiting a `JoinHandle` returns if the task panicked or was cancelled | [03](03-errors.md), [06](06-async-and-tokio.md) |
 | **`JoinHandle`** | Handle to a spawned thread or task; await or join it for the result. Dropping a tokio one detaches the task | [06](06-async-and-tokio.md), [07](07-concurrency-patterns.md) |
 | **`JoinSet`** | tokio collection of tasks returned in completion order; aborts them all when dropped | [07](07-concurrency-patterns.md) |
+| **`libloading`** | Crate for loading a shared library at run time and looking up symbols by name; loading runs the library's initialisers | [09](09-calling-c.md) |
 | **Lifetime** | A compile-time name (`'a`) for the region where a reference is valid. Describes, never extends | [02](02-ownership-and-borrowing.md) |
 | **Marker trait** | A trait with no methods that states a property of a type (`Send`, `Sync`, `Copy`) | [04](04-traits-and-generics.md) |
 | **`match`** | Exhaustive pattern matching; every variant must be handled | [01](01-foundations.md) |
@@ -59,6 +68,8 @@ term is the nearest equivalent, it's in the meaning.
 | **Ownership** | Every value has exactly one owner, and is dropped when the owner goes out of scope | [02](02-ownership-and-borrowing.md) |
 | **Package** | A directory with a `Cargo.toml`, building at most one library and any number of binaries. Nearest Go term: module | [01](01-foundations.md) |
 | **Panic** | Unrecoverable-error mechanism for bugs; unwinds the thread. Kills only that thread or task, unlike a Go goroutine panic | [03](03-errors.md) |
+| **`PhantomData<T>`** | Zero-sized field that makes a type generic over `T` without storing one; how typestate carries its state | [09](09-calling-c.md) |
+| **Panic hook** | Global function (`std::panic::set_hook`) run on every panic in every thread before unwinding or aborting; where a daemon records its crashes | [03](03-errors.md) |
 | **`Pin`** | Wrapper guaranteeing a value won't move in memory; needed to poll self-referential futures | [06](06-async-and-tokio.md) |
 | **Poisoning** | A `std::sync::Mutex` whose holder panicked reports it on the next `lock()` | [03](03-errors.md), [05](05-shared-state-and-threads.md) |
 | **`poll`** | The one method of `Future`: make progress, return `Ready` or `Pending` and arrange a wake-up | [06](06-async-and-tokio.md) |
@@ -80,6 +91,8 @@ term is the nearest equivalent, it's in the meaning.
 | **tokio** | The usual async runtime for networked Rust: scheduler, reactor, timers, sync primitives | [06](06-async-and-tokio.md) |
 | **Trait** | A named set of methods (or a marker) that types implement explicitly; Rust's interface | [04](04-traits-and-generics.md) |
 | **Trait object** | See `dyn Trait` | [04](04-traits-and-generics.md) |
+| **Typestate** | Encoding an object's state in its type, so methods exist only in the states where they're legal and transitions consume the old state | [09](09-calling-c.md) |
+| **`unsafe`** | A promise that you've checked what the compiler can't. Unlocks five operations (raw pointers, unsafe calls, mutable statics, unsafe traits, unions); turns nothing off | [09](09-calling-c.md) |
 | **Unwinding** | Running destructors up the stack after a panic; `panic = 'abort'` skips it | [03](03-errors.md) |
 | **Vtable** | Table of function pointers behind a `dyn Trait`; Go's itab | [04](04-traits-and-generics.md) |
 | **`watch`** | tokio channel holding only the latest value; for config and state changes | [07](07-concurrency-patterns.md) |

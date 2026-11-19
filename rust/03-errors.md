@@ -247,6 +247,112 @@ why you see `.lock().unwrap()` everywhere: it turns "someone panicked mid-update
 panic here too. Go's `sync.Mutex` has no such idea; a recovered panic can leave a mutex
 locked or the data half-written, and nothing tells the next user.
 
+### Where a panic takes down everything: WebAssembly
+
+The table above assumes the default `panic = 'unwind'`. Compile for the browser and that
+assumption goes. The rustc book: "By default the `wasm32-unknown-unknown` target is
+compiled with `-Cpanic=abort`", and the standard library shipped through rustup is built
+that way, so unwinding needs a nightly toolchain and a rebuilt `std`
+([platform support](https://doc.rust-lang.org/rustc/platform-support/wasm32-unknown-unknown.html)).
+With abort there's no unwinding: no destructors run, nothing is caught, and the
+JavaScript side sees a trap, which without a hook shows up as "something like
+*RuntimeError: Unreachable executed*"
+([console_error_panic_hook](https://github.com/rustwasm/console_error_panic_hook)). The
+module is left wherever it stopped, mid-update, with no way to tell what it was doing.
+Treat the whole instance as dead: the component on the page stops working, not one task.
+
+So code that's fine to `expect()` on a server is a bug in the browser. The usual offender
+is something "that can't fail", such as converting the JS clock to a date:
+
+```rust
+use chrono::{DateTime, NaiveDate};
+
+fn today_utc() -> Option<NaiveDate> {
+    let ms = js_sys::Date::now() as i64;   // milliseconds since the epoch, as f64 from JS
+    DateTime::from_timestamp_millis(ms).map(|dt| dt.date_naive())
+}
+```
+
+chrono's `from_timestamp_millis` returns `Option` and "Returns `None` on out-of-range number
+of milliseconds" ([docs](https://docs.rs/chrono/latest/chrono/struct.DateTime.html#method.from_timestamp_millis)).
+It won't happen with a sane clock, and a `.expect("clock")` would kill the page if it ever
+did. Returning `Option` pushes the decision to the caller, which has to choose what an
+unknown date *means*. In a validation path, pick the answer that refuses:
+
+```rust
+fn check_date_of_birth(dob: NaiveDate) -> Result<(), DobError> {
+    // Fail closed: without today's date we can't prove `dob` isn't in the future.
+    let today = today_utc().ok_or(DobError::ClockUnavailable)?;
+    if dob > today { return Err(DobError::InFuture); }
+    Ok(())
+}
+```
+
+That's **fail closed**: when a check can't be performed, treat the input as failing it.
+The opposite, accepting what you couldn't check, is fail open, and it's the default you
+get by accident when the error path is `unwrap_or(true)` or a missing branch.
+
+The same rule decides whether a **fallback chain** works. A typical wasm app tries the
+fastest backend first and falls back (a GPU backend, then a CPU one). That only works if
+every step of the preferred backend's setup returns an error. If a dependency `unwrap`s
+inside its own initialisation, the panic aborts the instance before your fallback code
+gets control. GPU setup is a good example of something that fails late: the WebGPU spec
+says an adapter "may expire at any time", and that "requesting unsupported capabilities
+results in failure" ([WebGPU](https://www.w3.org/TR/webgpu/)), so "an adapter was found"
+doesn't mean "a device can be created". The defences are to probe for the optional
+features a library silently relies on before choosing it, and, where the library's API
+allows, to do the fallible setup yourself and hand it the result, so every failure is an
+`Err` you can route to the next backend.
+
+### Where a panic leaves no trace: native daemons
+
+Back on a server, the opposite problem. I ran a program whose `main` indexed past the end
+of a `Vec`. With the default unwinding it exited with status **101**; built with
+`-C panic=abort` it died of `SIGABRT`, status 134. That difference matters for crash
+forensics. Operating-system crash machinery fires on fatal signals: on Linux, "The
+default action of certain signals is to cause a process to terminate and produce a core
+dump file" ([core(5)](https://man7.org/linux/man-pages/man5/core.5.html)). Exiting with
+101 is an ordinary exit. No core file, nothing for a crash reporter to collect, and a
+panic in a worker thread doesn't even end the process. If stderr goes nowhere (a service
+manager that discards it, a mobile platform), a panic leaves nothing behind at all.
+
+So a long-running daemon records its own crashes, with two pieces:
+
+- **A panic hook.** "The panic hook is invoked when a thread panics, but before the panic
+  runtime is invoked. As such, the hook will run with both the aborting and unwinding
+  runtimes" ([`std::panic::set_hook`](https://doc.rust-lang.org/std/panic/fn.set_hook.html)).
+  Chain to the default hook so the stderr message still appears.
+- **An unclean-exit marker.** No hook runs on `SIGKILL`, the out-of-memory killer, or a
+  power cut. Write a "running" marker when the daemon starts and mark it clean on orderly
+  shutdown; a marker that still says "running" at the next start means the last run died.
+
+```rust
+fn install_crash_hook(log_path: PathBuf) {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // Best effort, and nothing in here may panic: we're already panicking.
+        let _ = append_line(&log_path, &format!("panic: {info}"));
+        default_hook(info);
+    }));
+}
+```
+
+I checked the chaining with a worker thread that panicked: the hook's line was written,
+then the default message, and `main` carried on after `join` returned the error.
+
+| Event | Panic hook sees it | Marker sees it | Linux core dump |
+|---|---|---|---|
+| Panic, unwinding | ✅ | Only if the process then exits | ❌ (exit 101) |
+| Panic, `panic = 'abort'` | ✅ | ✅ | ✅ `SIGABRT`, if core dumps are enabled |
+| Segfault in C code | ❌ | ✅ | ✅ `SIGSEGV` |
+| `SIGKILL`, OOM killer, power loss | ❌ | ✅ | ❌ |
+
+> ⚠️ **Keep crash bookkeeping out of `--help` and `--version`.** If the marker logic runs
+> before argument parsing, every informational invocation that prints and exits looks
+> like a crash, and if it shares the live service's state directory it can overwrite the
+> real daemon's marker. Parse arguments first, and start crash accounting only on the path
+> that's actually going to run as the daemon.
+
 ## Check yourself
 
 1. A Go function returns `(*User, error)` and sometimes returns `nil, nil` for "not
@@ -262,5 +368,11 @@ locked or the data half-written, and nothing tells the next user.
 5. A thread panics while holding a `std::sync::Mutex<Vec<Order>>` halfway through
    updating it. What does the next `lock()` return, and why is that more useful than Go's
    behaviour in the same situation?
+6. A wasm page validates dates with a helper that calls `.expect()` on a conversion "that
+   can never fail", and it falls back from a GPU backend to a CPU one when setup returns
+   `Err`. Why is the `.expect()` more serious here than in a tokio server? On some phones
+   the page dies instead of falling back: why, and what do you change in each place?
+7. A daemon's crash counter climbs every time an operator runs `daemon --version`, while
+   real crashes in a worker thread never show up. Explain both.
 
-(Answers in [10-exercises.md](10-exercises.md).)
+(Answers in [11-exercises.md](11-exercises.md).)

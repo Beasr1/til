@@ -293,6 +293,87 @@ zero-copy parsers, where the copy is the thing you're trying to avoid.
 > outlive everyone who's borrowing it? If not, either move the owner up a scope, or stop
 > borrowing and own a copy.
 
+### A child handle must borrow its parent
+
+The same machinery can enforce teardown order, and it's easy to write a signature that
+quietly doesn't. Handles over a C library ([chapter 9](09-calling-c.md)) come in
+families: a loaded library, a device opened through it, a capture session started on the
+device. Teardown has to run in reverse (stop the session, then close the device, then
+unload the library), and each handle's `Drop` does one step.
+
+Plain scopes get the order right on their own: "all variables associated to that scope
+are dropped in reverse order of declaration"
+([Reference: destructors](https://doc.rust-lang.org/reference/destructors.html)). The
+question is whether anything stops someone dropping a parent *early*. Here's a version
+where nothing does:
+
+```rust
+struct Library;
+struct Device<'lib>  { lib: &'lib Library }
+struct Session<'lib> { lib: &'lib Library }
+
+impl<'lib> Device<'lib> {
+    fn open(lib: &'lib Library) -> Device<'lib> { Device { lib } }
+    fn start(&mut self) -> Session<'lib> { Session { lib: self.lib } }   // the bug
+}
+impl Drop for Device<'_>  { fn drop(&mut self) { println!("close device"); } }
+impl Drop for Session<'_> { fn drop(&mut self) { println!("stop session"); } }
+
+fn main() {
+    let lib = Library;
+    let mut dev = Device::open(&lib);
+    let session = dev.start();
+    drop(dev);
+    println!("still using session");
+    drop(session);
+}
+```
+
+It compiles with rustc 1.96 and prints:
+
+```
+close device
+still using session
+stop session
+```
+
+The session outlived the device it runs on. The signature said it would: `Session<'lib>`
+reuses the device's own lifetime parameter, so it promises only "valid while the
+*library* is". That's true of the pointer the session holds and false about what it
+depends on. Once `start` returns, the session doesn't borrow `dev` at all, so the checker
+has no reason to stop `drop(dev)`.
+
+The fix is one token. Return a lifetime tied to `&mut self`:
+
+```rust
+fn start(&mut self) -> Session<'_> { Session { lib: self.lib } }
+```
+
+By the elision rule above, `'_` here means "borrowed from `self`". Now the session is a
+borrow of the device, and the same `main` is rejected:
+
+```
+error[E0505]: cannot move out of `dev` because it is borrowed
+14 |     let session = dev.start();
+   |                   --- borrow of `dev` occurs here
+15 |     drop(dev);
+   |          ^^^ move out of `dev` occurs here
+16 |     drop(session);
+   |          ------- borrow later used here
+```
+
+Because it's a *mutable* borrow, you also get a second rule for free: no two sessions on
+one device at once.
+
+> ⚠️ **The fix stops you putting parent and child in one struct, and that's correct.** With
+> the buggy signature you could store `struct Rig<'lib> { device: Device<'lib>, session:
+> Session<'lib> }`, and since "The fields of a struct are dropped in declaration order"
+> (same Reference page), the device would close first, silently. With the fix, the
+> session borrows a sibling field, which is self-referential and won't compile. Keep the
+> two as locals in one scope, or let the session take the device *by value* and hand it
+> back when it stops, which is the typestate pattern in
+> [chapter 9 §9.4](09-calling-c.md#94-typestate-making-the-call-order-a-type-error).
+
 ### `'static`
 
 One lifetime has a name built in. `&'static str` is a reference valid for the whole
@@ -375,5 +456,8 @@ Most errors fall into a handful of shapes, with standard fixes:
    `String`? Argue from what each choice forces on the rest of the program.
 6. Which row of the table in §2.4 is the reason safe Rust can't have a data race, and why
    doesn't it need a separate "no data races" rule?
+7. A `Device<'lib>` has `fn start(&mut self) -> Session<'lib>`, and code that drops the
+   device while its session is still in use compiles. Why does the borrow checker allow
+   it, what's the one-token fix, and name two things the fixed version stops you doing.
 
-(Answers in [10-exercises.md](10-exercises.md).)
+(Answers in [11-exercises.md](11-exercises.md).)

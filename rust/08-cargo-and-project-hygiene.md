@@ -123,9 +123,35 @@ So:
   on its own in CI to catch it.
 - **Libraries should ask for the minimum** and leave `full` to applications. Use
   `default-features = false` to opt out of a dependency's defaults.
+- **Enable only documented features.** Cargo will accept any feature name in the
+  dependency's manifest, including ones meant for its own testing. reqwest 0.13.5's
+  manifest has a block of double-underscore features headed "Internal (PRIVATE!)
+  features used to aid testing" and "Don't rely on these whatsoever. They may disappear
+  at any time" ([Cargo.toml](https://github.com/seanmonstar/reqwest/blob/master/Cargo.toml)).
+  `__rustls` there pulls in the rustls crates but not the crypto provider and certificate
+  verifier that the public `rustls` feature adds. It compiles, and you have a client
+  whose TLS was never finished. With `default-features = false`, pick names from the
+  crate's documented feature list ([reqwest's](https://docs.rs/reqwest/latest/reqwest/#optional-features)),
+  and re-check them when you bump a major version.
 
 There's no Go equivalent. Go's build tags are per build, not negotiated across
 dependencies.
+
+### Build every feature combination you ship
+
+Features are also how teams ship half-finished work: a new field behind
+`#[cfg(feature = "new-field")]`. Rust lets you put `#[cfg]` on a struct field, a function
+parameter or a match arm, and that's the trap. Every place that constructs, destructures
+or passes the gated item needs the same gate, and the build with the feature off is a
+different program from the build with it on. If CI only builds one, the other rots
+silently until someone needs it.
+
+The fix is to build the combinations. [`cargo-hack`](https://github.com/taiki-e/cargo-hack)
+does it: `--each-feature` builds "for each feature which includes default features and
+`--no-default-features`", and `--feature-powerset` builds "the feature powerset", with
+`--depth` to "Specify a max number of simultaneous feature flags" when the powerset gets
+large. A gate that costs a hundred lines across five files is also a sign it should be
+short-lived: remove it once the feature has shipped.
 
 ## 8.4 Versions and the lockfile
 
@@ -202,6 +228,47 @@ ran in 49.5 µs of wall-clock time on my machine. Retries, backoff, heartbeats a
 timeouts become fast, deterministic tests instead of slow, flaky ones. Only tokio's own
 timers are paused; `std::time::Instant::now()` and `std::thread::sleep` aren't.
 
+**Poll, don't sleep, when the clock isn't yours.** End-to-end tests against a real
+server, database or child process can't pause time. The tempting version is a fixed
+`sleep(Duration::from_secs(5))` before each assertion: too short on a loaded CI runner,
+pure waste everywhere else, and when it fails it says nothing. Poll the observable state
+against a deadline instead, and on timeout report every state you saw:
+
+```rust
+async fn await_state(job: &Client, id: JobId, want: State, within: Duration) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + within;
+    let mut seen = Vec::new();
+    loop {
+        let s = job.state(id).await.map_err(|e| e.to_string())?;
+        if seen.last() != Some(&s) { seen.push(s.clone()); }
+        if s == want { return Ok(()); }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!("wanted {want:?} within {within:?}; saw {seen:?}"));
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+```
+
+A failure now reads "wanted Done; saw [Queued, Running, Failed]", which is usually the
+whole diagnosis.
+
+**A coverage drop with a green suite is a measurement problem until proven otherwise.**
+Source-based coverage ([rustc book](https://doc.rust-lang.org/rustc/instrument-coverage.html))
+works by instrumenting the test binaries: "the counter values are written to a `profraw`
+file at program termination", and the raw files are combined afterwards with
+`llvm-profdata merge`. Anything that changes how each binary is invoked, how it
+terminates, or where it writes can change what gets recorded, with no warning, because a
+missing profile just looks like code that didn't run. I've seen a whole-package coverage figure fall by several points
+with every test passing, and come back on the same tree when the test thread count was
+set through the environment instead of as an argument after `--` to the coverage
+wrapper. I didn't establish the mechanism, so take the specific fix as a lead, not a
+rule. Note too that the rustc book marks `RUST_TEST_THREADS` as deprecated in favour of
+`--test-threads` ([tests](https://doc.rust-lang.org/rustc/tests/index.html)), so the
+environment variable isn't a long-term answer either. What holds regardless is the
+method: when the number moves and the tests didn't, measure the *same tree* two ways
+before you go looking for missing tests.
+
 ## 8.6 Formatting and lints
 
 | Tool | Does | Go nearest |
@@ -237,10 +304,19 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 cargo build -p <each package>      # catches the feature-unification trap
+cargo hack check --each-feature    # catches a feature combination that rotted (§8.3)
 ```
 
 `-D warnings` turns warnings into errors in CI only, so a new compiler's new warning
 doesn't break local builds.
+
+In a workspace, set the lints once: "The `workspace.lints` table is where you define lint
+configuration to be inherited by members of a workspace", and each member opts in with
+`[lints] workspace = true` (respected from Cargo 1.74,
+[workspaces](https://doc.rust-lang.org/cargo/reference/workspaces.html)). A crate that
+wraps a C library can keep `unsafe_code = "deny"` at the workspace level and put an
+explicit `#[allow(unsafe_code)]` on each FFI module, so every new `unsafe` is a visible
+decision ([chapter 9](09-calling-c.md)).
 
 ## 8.7 Profiles
 
@@ -275,6 +351,75 @@ dependencies run at near release speed.
 > behaves differently in CI, check the profile, the feature set and the lockfile before
 > the logic.
 
+## 8.8 CI that builds and runs everything
+
+A test suite that no pipeline runs isn't a test suite. It compiles on the day it's
+written and then drifts: fixtures go stale, an API changes underneath it, and months
+later someone finds dozens of failures that each need archaeology. Four habits keep the
+whole project honest.
+
+**Compile every target.** Without target flags, `cargo check` "will check all binary and
+library targets of the selected packages", and `cargo clippy` behaves the same way: I put
+a type error in a file under `tests/`, and plain `cargo clippy` (0.1.96) finished clean
+while `cargo clippy --all-targets` failed with E0308. So `tests/`, `benches/`,
+`examples/` and every `#[cfg(test)]` module are never compiled by a plain lint run. `--all-targets` "is equivalent to specifying `--lib --bins --tests
+--benches --examples`" ([cargo check](https://doc.rust-lang.org/cargo/commands/cargo-check.html)).
+Then actually run the tests in a CI stage, on a host that has the native libraries they
+need, not only inside the release container.
+
+**Never gate a build on "the output exists".** A script that runs `cargo build` only if
+`target/…/module.wasm` is missing will keep serving a stale artifact after the code it
+depends on changes. When that artifact is bound to an interface (a plugin built against
+a host's imports, a library against a header), the stale copy fails at load time with an
+error that points nowhere near the cause. Always invoke the build and let Cargo decide:
+an up-to-date `cargo build` is a quick no-op. External build systems that need to know
+when to re-run Cargo should read the "dep info" files Cargo writes next to each artifact,
+which list "all of the file dependencies required to rebuild the artifact"
+([build cache](https://doc.rust-lang.org/cargo/reference/build-cache.html)).
+
+**In a build script, ask Cargo about the target; `#[cfg]` describes the host.** A
+`build.rs` is compiled for, and runs on, the machine doing the build. So
+`#[cfg(target_arch = "aarch64")]` inside it tests the *build machine*, which is wrong the
+moment you cross-compile. The Cargo reference says it directly: "`CARGO_CFG_*` variables
+should be used instead of the `cfg!` macro or `#[cfg]` attribute in build scripts, those
+check the *host* platform, not the *target*"
+([environment variables](https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-build-scripts)).
+
+```rust
+// build.rs: link an architecture-specific static library only where it exists.
+fn main() {
+    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();   // the target, e.g. "aarch64"
+    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();       // the target, e.g. "linux"
+    println!("cargo:rustc-link-lib=static=codec");
+    if arch == "aarch64" {
+        println!("cargo:rustc-link-lib=static=codec_neon");   // only built for ARM64
+    }
+    if os == "linux" {
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+    }
+}
+```
+
+**Make generated output deterministic.** A build script that reads a table and generates
+code, or a program that prints a summary, must not iterate a `HashMap` to do it. The std
+docs: the default hasher "is randomly seeded", "each `HashMap` instance uses a different
+seed", and iteration visits entries "in arbitrary order"
+([HashMap](https://doc.rust-lang.org/std/collections/struct.HashMap.html)). The same
+five keys, iterated in three runs of one binary:
+
+```
+["alpha", "delta", "bravo", "echo", "charlie"]
+["echo", "bravo", "alpha", "delta", "charlie"]
+["charlie", "alpha", "bravo", "echo", "delta"]
+```
+
+Generated code that changes on every build defeats caching and review, and breaks any
+test that compares output. Use `BTreeMap` (sorted by key) or an insertion-ordered map
+such as the `indexmap` crate whenever order is observable. Go programmers have met this
+before: "The iteration order over maps is not specified and is not guaranteed to be the
+same from one iteration to the next" ([Go spec](https://go.dev/ref/spec#For_range)).
+Sort the keys before you print.
+
 ## Check yourself
 
 1. Your project is a single `src/main.rs` of 2,000 lines, and you want to test the
@@ -290,5 +435,13 @@ dependencies run at near release speed.
    it gives up after five attempts without the test taking 31 seconds?
 6. A test passes with `cargo test --release` and panics with plain `cargo test`. Name the
    most likely cause.
+7. After a CI change, the coverage report for one package drops by several points. Every
+   test still passes and nobody deleted a test. What do you suspect first, and what's the
+   experiment that settles it? While you're there, CI's lint step is `cargo clippy --
+   -D warnings` and there's no test stage: what's been rotting?
+8. A `build.rs` links an ARM-only static library inside `#[cfg(target_arch = "aarch64")]`
+   and generates a lookup table by iterating a `HashMap`. Cross-compiling for ARM64 on an
+   x86-64 machine fails to link, and the generated file shows a diff on every build.
+   Explain both, and fix both.
 
-(Answers in [10-exercises.md](10-exercises.md).)
+(Answers in [11-exercises.md](11-exercises.md).)

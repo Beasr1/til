@@ -319,4 +319,4 @@ goes out of scope, and treat `Drop` as the backstop.
 6. You write `let _ = span.enter();` to time a block with a tracing span, and the timings
    all come out near zero. Why?
 
-(Answers in [10-exercises.md](10-exercises.md).)
+(Answers in [11-exercises.md](11-exercises.md).)

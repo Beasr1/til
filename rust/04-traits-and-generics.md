@@ -253,4 +253,4 @@ undefined behaviour of an unsynchronised read and write to the same memory.
 6. A colleague says "Rust prevents race conditions, so we don't need to think about lock
    ordering." What's right and wrong in that sentence?
 
-(Answers in [10-exercises.md](10-exercises.md).)
+(Answers in [11-exercises.md](11-exercises.md).)

@@ -333,4 +333,4 @@ Things to notice, each covered later:
 5. In the word counter, why can `sorted` hold `&String` instead of `String`, and what
    would have to be true of `counts` for that to be allowed?
 
-(Answers in [10-exercises.md](10-exercises.md).)
+(Answers in [11-exercises.md](11-exercises.md).)

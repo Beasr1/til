@@ -343,4 +343,4 @@ compiler's error message usually names the fix (`pin!` or `Box::pin`).
 6. Explain cooperative scheduling to a Go programmer in one paragraph, using a
    `for { }` loop that never calls anything as the example. What happens in each language?
 
-(Answers in [10-exercises.md](10-exercises.md).)
+(Answers in [11-exercises.md](11-exercises.md).)

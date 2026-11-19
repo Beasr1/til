@@ -418,6 +418,138 @@ you is visibility: allocation and locking show up in the types (`Box`, `Vec`, `S
 `Arc`, `Mutex`), so you can audit a callback by reading it, rather than by knowing which
 library calls allocate behind your back.
 
+## 7.9 Calls you can't cancel
+
+Everything in this chapter so far cancels by dropping a future at an `.await`. A blocking
+call into a C library has no `.await`. If a vendor SDK's `read_card()` waits on hardware
+that has stopped answering, it waits for ever, and nothing in Rust can interrupt it.
+tokio says so of its own blocking pool: "tasks spawned using `spawn_blocking` cannot be
+aborted because they are not async", and "runtime shutdown will wait indefinitely for all
+started `spawn_blocking` to finish running"
+([spawn_blocking](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html)). The
+standard library has no way to kill a thread either. Go is in the same position: there's
+no API to stop a goroutine from outside, and a goroutine inside a cgo call can't check a
+`context`.
+
+What you *can* do is stop waiting. The thread stays stuck; the caller doesn't.
+
+### Abandon and bound
+
+Put the call on a thread of its own, wait for its answer with a deadline, and if the
+deadline passes, give up on that thread rather than on the caller:
+
+```rust
+#[derive(Debug)]
+enum OpError { TimedOut, ExecutorGone }
+
+fn read_card_with_budget(budget: Duration) -> Result<Result<String, i32>, OpError> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);   // room for one reply: the send never blocks
+    std::thread::Builder::new()
+        .name("device-executor".into())
+        .spawn(move || {
+            let r = vendor_read_card();   // may never return
+            let _ = tx.send(r);           // Err if we were abandoned; the thread just exits
+        })
+        .expect("spawn executor");
+    match rx.recv_timeout(budget) {
+        Ok(r) => Ok(r),
+        Err(RecvTimeoutError::Timeout) => Err(OpError::TimedOut),
+        Err(RecvTimeoutError::Disconnected) => Err(OpError::ExecutorGone), // it panicked
+    }
+}
+```
+
+`recv_timeout` returns an error "if the corresponding channel has hung up, or if it waits
+more than `timeout`" ([docs](https://doc.rust-lang.org/std/sync/mpsc/struct.Receiver.html#method.recv_timeout)).
+With a stand-in vendor call that slept for 5 s and a 200 ms budget, the caller got
+`Err(TimedOut)` after 210 ms, and the whole program exited 0.53 s after starting, with
+the abandoned thread still asleep. That's documented behaviour: "When the main thread of a
+Rust program terminates, the entire program shuts down, even if other threads are still
+running" ([std::thread](https://doc.rust-lang.org/std/thread/)).
+
+The Go version has the same shape, and the same trap if you get the channel wrong:
+
+```go
+func readCardWithBudget(budget time.Duration) (string, error) {
+	done := make(chan result, 1) // buffered: an abandoned goroutine can still send, then exit
+	go func() {
+		s, err := vendorReadCard() // a cgo call holds its OS thread until it returns
+		done <- result{s, err}
+	}()
+	select {
+	case r := <-done:
+		return r.s, r.err
+	case <-time.After(budget):
+		return "", errTimedOut // the goroutine is abandoned, not stopped
+	}
+}
+```
+
+With an unbuffered `done`, the abandoned goroutine would block on its send for ever,
+even after the call finally returned. Rust's `mpsc` doesn't have that failure: a send to
+a dropped receiver returns an error instead of waiting.
+
+Three rules make the pattern safe in a real service:
+
+- **The executor owns the handle.** If a device or library handle lives on the executor
+  thread, an abandoned executor still holds it. The next request must not reuse it; it
+  gets a fresh executor and reopens the device, or is refused.
+- **One claim per device.** While a stuck executor holds a reader, refuse a second session
+  on that reader rather than queueing behind a call that may never return.
+- **The bound comes from outside.** A thread stuck inside a foreign call can't notice its
+  own deadline. Either the caller enforces it, as above, or a separate watchdog thread
+  tracks start times of live operations. Detecting a stuck call isn't reclaiming it: the
+  watchdog can report, reply and refuse; it can't make the call return.
+
+> ⚠️ **Killing the process is the only real reclaim, so only do it when the process holds
+> one session.** Exiting frees the stuck thread, its memory and the device handle, and a
+> supervisor can restart cleanly. If a service runs one session per process (a helper
+> process per device, or a platform that gives each session its own process), a watchdog
+> that exits on an overrun is reasonable. In a daemon serving several clients,
+> `process::exit` on one stuck call kills every other client's session. There, abandon the
+> thread and keep the process.
+
+If the executor might panic rather than hang, `std::panic::catch_unwind` can turn that
+into an error reply. Its docs say it's "**not** recommended … for a general try/catch
+mechanism" and that it "*only* catches unwinding panics, not those that abort the process"
+([docs](https://doc.rust-lang.org/std/panic/fn.catch_unwind.html)). Use it at the edge,
+report the failure, and throw the handler away rather than reusing state that a panic may
+have left half-updated.
+
+### A connected socket isn't a live server
+
+The same thinking applies to local peers. A client connects to a helper daemon over a
+local socket, sends a request, and hangs for ever. The daemon was "obviously" alive: the
+connect succeeded. But a successful connect proves only that the kernel completed it.
+Linux's `listen(2)`: the backlog "specifies the queue length for completely established
+sockets waiting to be accepted" ([listen(2)](https://man7.org/linux/man-pages/man2/listen.2.html)).
+Connections are completed into that queue whether or not the server's accept loop is
+running. I bound a `TcpListener` and never called `accept`: on macOS a client's
+`connect_timeout` succeeded in 0.2 ms, the write went through, and the read hit its 300 ms
+timeout with `WouldBlock`.
+
+So:
+
+- **Every request to a peer gets its own deadline**, the connect and the request
+  separately, on local sockets as much as remote ones. "It's on the same machine" bounds
+  latency, not liveness.
+- **Best-effort collection must not block on an optional source.** If you're gathering
+  diagnostics from several daemons and one is wedged, time it out and carry on with what
+  the others (or the disk) gave you.
+
+### Treat a vendor library's documentation as a hypothesis
+
+The calls that hang are usually the ones the documentation didn't warn about. Before
+wrapping a native SDK, write a small probe suite that runs each function against real
+hardware in each state you can create (nothing attached, attached and idle, unplugged
+mid-call, called twice) and records what actually comes back: the return code, how long
+it took, whether it returned at all, and for strings, the actual bytes. Two functions
+with identical `char*` signatures can use different text encodings, an "init" with no
+device attached can return a code the header doesn't list, and a status poll can block
+for ever after an unplug. Those findings decide which calls go behind an executor with a
+budget, and they belong in the wrapper's tests, so a new SDK version that changes them
+fails loudly. [Chapter 9](09-calling-c.md) covers the wrapper itself.
+
 ## Check yourself
 
 1. A Go service has three places that might `close(results)` and occasionally panics with
@@ -435,5 +567,9 @@ library calls allocate behind your back.
 6. A callback thread owned by an OS API (audio, say) must hand fixed-size frames to a
    tokio task that sends them over the network. Design the handoff. What must the callback never do, and what do you do when the
    consumer falls behind?
+7. A daemon serves several clients, each talking to its own card reader through a vendor
+   call that occasionally hangs for ever. A colleague proposes a watchdog that calls
+   `process::exit` when any call overruns. What goes wrong, what do you build instead, and
+   in what deployment would the colleague's design be the right one?
 
-(Answers in [10-exercises.md](10-exercises.md).)
+(Answers in [11-exercises.md](11-exercises.md).)

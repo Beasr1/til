@@ -1,4 +1,4 @@
-# 10. Exercises and answers
+# 11. Exercises and answers
 
 Try to answer before reading. Getting one wrong is data, not failure. The answers are
 worked rather than stated, because the reasoning is the part that transfers.
@@ -108,6 +108,21 @@ without synchronisation (`Rc`, `RefCell`) isn't allowed to cross. So "no data ra
 consequence, not an extra rule. Interior mutability types are the controlled exceptions,
 each with its own synchronisation.
 
+**7. A child handle that reuses the parent's lifetime.**
+
+`Session<'lib>` says the session is valid as long as the *library* is. It copies the
+library reference out of the device, so once `start` returns, nothing in the session
+borrows the device. As far as the checker knows, the two are independent, so moving or
+dropping the device is fine, and its `Drop` closes the device under a live session. The
+fix is `-> Session<'_>` (or an explicit `fn start<'d>(&'d mut self) -> Session<'d>`): the
+session's lifetime is now the borrow of `self`, so the device can't be moved, dropped or
+used mutably while the session exists (E0505 on the early `drop`). Two things it then
+stops: starting a second session on the same device while one is live (two `&mut`
+borrows), and storing the device and its session as fields of one struct, which would
+need the session to borrow a sibling field. Both are restrictions you wanted: the first
+is a device rule, and a struct declaring the device field first would have dropped its
+fields in declaration order, closing the device before stopping the session.
+
 ---
 
 ## File 03 — Errors
@@ -153,6 +168,39 @@ The mutex is poisoned, so the next `lock()` returns `Err(PoisonError)`. The usua
 `PoisonError::into_inner` gives you the guard anyway. In Go, a panic recovered somewhere
 up the stack leaves the data half-written and the next `Lock()` succeeds normally (or
 the mutex stays locked for ever if the unlock wasn't deferred). Nothing flags it.
+
+**6. `.expect()` and a fallback chain in a wasm page.**
+
+On `wasm32-unknown-unknown` the default is `panic = 'abort'`, so a panic doesn't unwind
+one task while the rest carry on, as in tokio. It traps the module: no destructors run,
+JavaScript gets a `RuntimeError`, and the instance is left mid-update, so the component
+is dead until the page reloads. The helper should return `Option` or `Result` (chrono's
+`from_timestamp_millis` already returns `Option`), and the caller should choose an
+explicit meaning for "couldn't check": for validation, fail closed, which here means
+rejecting the date with its own error rather than accepting it unchecked.
+
+The fallback dies for the same reason. The chain falls back on `Err`, but somewhere in the
+GPU backend's setup a dependency `unwrap`s or `expect`s instead of returning one: a
+device request on an adapter that has expired, or a feature the driver doesn't expose
+that the library assumed. The abort happens inside the first backend, so the fallback
+code never runs. Fix it by probing the optional features the library relies on before
+choosing it, and by doing the fallible setup steps yourself (instance, adapter, device),
+each returning `Err`, then handing the result to the library if its API allows. That
+turns every failure on the preferred path into a value the chain can act on.
+
+**7. `--version` counted as a crash, worker panics not counted at all.**
+
+The crash accounting (write a "running" marker, check the previous one) runs before
+argument parsing. `daemon --version` writes the marker, prints and exits without the
+orderly-shutdown code that marks it clean, so the next start sees an unclean exit; worse,
+if it shares the live daemon's state directory it scribbles over the real service's
+marker. Move the bookkeeping after parsing, onto the path that actually runs the daemon.
+Worker panics are invisible because a panicking thread unwinds and dies alone: the
+process keeps running, so the marker never shows an unclean exit, and even a panic in
+`main` exits with status 101, an ordinary exit that leaves no core dump for the OS to
+collect. Install a panic hook with `std::panic::set_hook`, which runs for every panic in
+every thread before unwinding or aborting begins, and have it record the panic before
+chaining to the default hook.
 
 ---
 
@@ -401,6 +449,22 @@ rather than the callback stalling. If a tokio `mpsc` is used directly, use `try_
 never `blocking_send`, and be aware its sends may allocate; for a strict real-time thread
 the preallocated ring buffer is the safer choice.
 
+**7. A watchdog that exits the process on any overrun.**
+
+The vendor call can't be cancelled, so the watchdog's only lever is `process::exit`, and
+that lever is too big: one reader hanging ends every other client's session in the same
+daemon, including the ones mid-transaction on healthy readers. Build abandon-and-bound
+instead. Each connection gets a dedicated executor thread that owns its device handle; the
+connection thread sends requests over a channel and waits with `recv_timeout(budget)`. On
+a timeout it replies to its client with a timeout error and abandons the executor, which
+finishes on its own if the call ever returns and exits when its send fails. Add a claim
+per reader so nobody starts a new session on a reader whose stuck executor still holds the
+handle, and a cap on connections so abandoned threads can't pile up without limit. The
+colleague's design is right when the process holds exactly one session: a helper process
+per device, or a platform that runs each session in its own process. Then exiting kills
+only the stuck session, the OS reclaims the thread, memory and handle, and a supervisor
+restarts cleanly, which abandoning can never do.
+
 ---
 
 ## File 08 — Cargo and project hygiene
@@ -455,6 +519,133 @@ build is correctly reporting. If wrapping is intended, say so with `wrapping_add
 `std::num::Wrapping`; if not, use `checked_add` and handle `None`. A `debug_assert!` that
 only fires in debug builds is the other candidate.
 
+**7. Coverage drops with a green suite; lints that skip tests.**
+
+Suspect the measurement before the code. Coverage counters are written by each
+instrumented test binary when it terminates and merged afterwards, so a change to how the
+binaries are invoked (arguments forwarded through a wrapper, a thread count, a timeout
+that kills a binary, a different output path) can lose profile data silently, and lost
+data looks exactly like untested code. The experiment: take one commit and measure it
+twice, with the old invocation and the new one, changing nothing else. If the numbers
+differ on the same tree, it's the pipeline. Prefer configuration the test runner reads
+itself over flags passed through several layers, and check what the runner's docs
+currently recommend (the rustc book now marks `RUST_TEST_THREADS` as deprecated in favour
+of `--test-threads`).
+
+As for the lint step: without `--all-targets`, `cargo clippy` checks only libraries and
+binaries, so `tests/`, `benches/`, `examples/` and `#[cfg(test)]` modules haven't even
+been *compiled* in CI, let alone run. They've rotted: compile errors against changed APIs,
+fixtures that no longer match, assertions that never passed. Add `--all-targets` and a
+stage that runs `cargo test --all-targets` on a host with the native libraries the tests
+need, then expect a few days of fixing what accumulated.
+
+**8. `#[cfg]` and a `HashMap` in `build.rs`.**
+
+A build script is compiled for, and runs on, the build machine. On an x86-64 host,
+`#[cfg(target_arch = "aarch64")]` inside `build.rs` is false even when the crate is being
+built for ARM64, so the ARM-only library is never linked and the link fails. (Built
+natively on ARM it works, which is why nobody noticed.) Read the target from Cargo
+instead: `std::env::var("CARGO_CFG_TARGET_ARCH")`, which the Cargo reference says to use
+because `cfg!` and `#[cfg]` in build scripts "check the *host* platform, not the
+*target*". The diff on every build is `HashMap`'s randomly seeded hasher: iteration order
+is arbitrary and changes between runs, so the generated table comes out in a different
+order each time. Use a `BTreeMap` (sorted) or an insertion-ordered map, or collect the
+keys and sort them before generating.
+
+---
+
+## File 09 — Calling C
+
+**1. Three FFI changes in the 2024 edition.**
+
+Extern blocks need `unsafe extern "C" { … }`; link-affecting attributes need the
+`unsafe(…)` wrapper (`#[unsafe(no_mangle)]`, and the same for `export_name` and
+`link_section`); and an unsafe operation inside an `unsafe fn` now warns unless it has its
+own `unsafe { }` block (`unsafe_op_in_unsafe_fn`). Each `unsafe` names a different
+promise. On the extern block: "these signatures match the real functions", which the
+compiler can't check because it never sees the C side. On `no_mangle`: "no other library in
+the link exports this name", because symbol names are one global namespace and a clash
+(the Edition Guide's example is a function exported as `malloc`) breaks code that is all
+safe Rust. On the inner block: "this particular operation meets its preconditions",
+separately from the function's contract with its callers. The migration (`cargo fix
+--edition`) adds the keywords but can't check any of the promises, so the declarations
+still need reading against the header.
+
+**2. `__stdcall` declared as `extern "C"`.**
+
+It works because on x64 there's only one calling convention: Microsoft's docs say
+`__stdcall` "is accepted and ignored by the compiler" on x64, so `"C"` and `"system"`
+generate identical calls. On 32-bit x86 they differ in who removes the arguments from the
+stack: the `__cdecl` caller pops them, the `__stdcall` callee pops its own. With the wrong
+declaration, the callee pops the 4 bytes of `port` and then the caller adjusts the stack
+as if they were still there, so the stack pointer is off after every call. That's
+undefined behaviour: it might crash at once, crash somewhere unrelated, or appear to work
+until the optimiser changes how the caller uses its stack frame. The fix is one word:
+`extern "system"`, which is `stdcall` on 32-bit Windows and `C` everywhere else, so it's
+right on every target.
+
+**3. What the typestate can't prevent, and a transition that ignores the return code.**
+
+Any of: a symbol name pointing at the wrong export (`end_capture` resolved to
+`scanner_close`); a function type or argument types that don't match the header; the wrong
+calling convention; loading a different build of the library from an untrusted path. The
+status check can catch the first one *if* the wrong function happens to fail in that
+state: in §9.4 the second `close` returned −1 and `check` turned it into an error. It
+can't catch a wrong function that succeeds, and it can't catch an ABI or type mismatch at
+all, because those corrupt the call itself before any status code exists; you might read
+a garbage return value as success. Typestate constrains which methods you can call; it
+knows nothing about what each method does.
+
+Now the transition that ignores status. Without typestate, a reader knows the device's
+state is "whatever the last call returned", and checks. With a typestate that ignores
+status, the type *asserts* a state: `Scanner<Open>` reads as "the device is open", so
+nobody checks again, and every later method is offered as legal. If `scanner_open` failed,
+every subsequent call is made to a device that isn't open, and the types point readers
+away from the bug. The type is only as true as the transition that produced it, so the
+transition must turn a failed call into `Err` and never construct the next state.
+
+**4. `checked_mul` on two `c_int::MAX` values.**
+
+`c_int::MAX` is 2,147,483,647. Converted to `usize` on a 64-bit target and multiplied,
+the product is 4,611,686,014,132,420,609, which fits in `usize` (max about 1.8 × 10¹⁹), so
+`checked_mul` returns `Some`. `vec![0u8; len]` then asks the allocator for about 4.6
+exabytes. The allocator fails, Rust calls `handle_alloc_error`, and its default with `std`
+is to print `memory allocation of … bytes failed` and abort. Abort isn't a panic: no
+unwinding happens, so `catch_unwind` and the test harness's own panic catching never get
+control, and the whole test binary dies with SIGABRT (status 134 in my run). The fix is
+to bound the dimensions against the largest frame a real device produces before
+allocating, and to return an error if they exceed it; `Vec::try_reserve` is the fallback
+when no bound is possible, since it returns `Err` instead of aborting.
+
+**5. Freeing `CString::into_raw` with the client's allocator.**
+
+`CString::into_raw`'s docs say the pointer must come back to `CString::from_raw` and that
+"one should *not* use the standard C `free()` function". `Marshal.FreeHGlobal` and
+Swift's `free` both release memory through allocators your library doesn't control. CI
+didn't notice because on Linux and macOS a `cdylib` uses the `System` allocator, which is
+built on `malloc`, and the clients' `free` often reaches the same heap: it worked by
+coincidence (and even there `System`'s docs say mixing it with the backing allocator isn't
+valid). On Windows the allocator underneath is different (`HeapAlloc`, and each CRT copy
+has its own heap manager, per Microsoft), so the same code corrupts the heap. And if you
+ever add `#[global_allocator]` for a faster allocator, Linux breaks too. Change the
+library: export `mylib_string_free` (and a free function for every other owned type),
+document it next to each function that returns an owned pointer, and make the bindings
+call it.
+
+**6. `Drop` that frees after a 500 ms wait.**
+
+The bad run: the device is unplugged mid-stream (or the thread handling libusb events has
+already stopped). `Drop` calls `libusb_cancel_transfer` on each transfer, which only
+*requests* cancellation and returns. It waits 500 ms; some callbacks never arrive. It
+frees those transfers anyway. libusb still owns them, and its docs say freeing a transfer
+after cancelling "but before cancellation has completed will result in undefined
+behaviour". When libusb later completes or tears down those transfers, it writes into
+freed memory, which by then may belong to something else: a crash on the next replug, or
+silent corruption. `Drop` should free only transfers whose callbacks have run, and for the
+rest, deliberately leak them (`mem::forget` or `Box::leak` on the owning box) and log how
+many. A bounded leak on a rare path is the only sound option when ownership never comes
+back.
+
 ---
 
 ## Things to try
@@ -486,6 +677,13 @@ Roughly in order of effort.
    per-package build. Then reproduce the feature-unification trap from chapter 8 §8.3.
 9. **Write a paused-time test** for a reconnect loop with exponential backoff and jitter.
    Assert on the exact sequence of delays.
+10. **Wrap a toy C library.** Write a five-function C "device" (init, open, begin, end,
+    close) that prints each call and returns an error when called in the wrong state, with
+    a constructor that prints on load. Build it as a shared library, load it with
+    `libloading`, and wrap it in the typestate from chapter 9 §9.4. Then break it three
+    ways on purpose: paste a wrong symbol name, drop a status check, and pass `c_int::MAX`
+    dimensions to a frame constructor. Note which ones the compiler, the status checks
+    and your tests each catch.
 
 ---
 
@@ -499,5 +697,7 @@ Roughly in order of effort.
 - "Where could this code block a tokio worker?"
 - "Explain `Pin` properly, with a self-referential example."
 - "What would this look like with `unsafe`, and what invariants would I be promising?"
+- "Here's a C header. For every pointer that crosses it, who allocates, who frees, and
+  with what?"
 - "How do I profile a tokio program? What's `tokio-console` for?"
 - "Is my mental model right? Here's what I think happens: …"
