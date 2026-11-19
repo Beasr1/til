@@ -340,6 +340,214 @@ moving from `ServeMux` to chi changes the route table, not the handlers. Its def
 the other two: a wrong method gets 405 with `Allow`, and HEAD on a GET route gets 405 unless you
 add `middleware.GetHead`.
 
+## Wiring middleware so nothing skips it
+
+Moving cross-cutting work (audit logging, authentication, looking up the caller's organisation)
+out of each handler and into middleware is the right refactor. It also creates a new way to fail:
+middleware that isn't attached runs nowhere, and nothing says so. In one service an audit
+middleware was written, reviewed and merged, and never passed to `Use`. It compiled, every endpoint
+worked, and audit rows stopped arriving for weeks. Two people later fixed it independently, which
+says no test exercised it.
+
+There are four ways to get there. Each was measured on gin v1.12.0 with `httptest`, built with Go
+1.25.0.
+
+**1. Never registered.** The example above. Nothing in Go or gin notices an unused function.
+
+**2. Registered after the routes.** gin's `Engine.Use` comment says middleware attached through it
+"will be included in the handlers chain for every single request. Even 404, 405, static files...".
+That's true only for routes registered *after* the call. When a route is registered, gin copies the
+group's middleware list into that route's chain
+([`routergroup.go:86-88`](https://github.com/gin-gonic/gin/blob/v1.12.0/routergroup.go#L86-L88),
+[`combineHandlers`](https://github.com/gin-gonic/gin/blob/v1.12.0/routergroup.go#L241-L248)), and
+`Group` copies its parent's list when the group is created
+([`routergroup.go:72-78`](https://github.com/gin-gonic/gin/blob/v1.12.0/routergroup.go#L72-L78)).
+Later `Use` calls append to a list those routes no longer read:
+
+```go
+r.GET("/early", h)
+r.Use(audit)
+r.GET("/late", h)
+
+api := r.Group("/api")
+reports := api.Group("/reports") // created before the next line
+api.Use(identity, token)
+reports.GET("/daily", h)
+api.GET("/orders", h)
+```
+
+The handler prints what the middleware set:
+
+```
+GET /early              200 audited=false org=""
+GET /late               200 audited=true org=""
+GET /api/orders         200 audited=true org="org-42"
+GET /api/reports/daily  200 audited=true org=""    ← no identity, and no token check either
+```
+
+The last line is an authentication bypass that compiles, serves 200s, and looks correct in the
+file, because `reports` is visibly a child of `api`. chi refuses this ordering outright: `Use` after
+a route has been added panics with "chi: all middlewares must be defined before routes on a mux"
+([`mux.go:101-103`](https://github.com/go-chi/chi/blob/v5.5.0/mux.go#L101-L103)).
+
+**3. The wrong order.** Middleware runs in the order it was attached. A token check that needs the
+organisation the identity middleware sets has to come after it. Attached as
+`r.Group("/api", token, identity)`, the check found no organisation and refused every request:
+`401 {"err":"no org for token check"}`. That one fails loudly. The quiet version is a check written
+to allow a request when the value it expects is missing.
+
+**4. A route outside the group.** An internal endpoint registered on the engine instead of under
+the group skips the middleware that sets request values. Whatever it then reads from the context
+comes back as the zero value: gin's `GetBool`, `GetString` and friends return the zero value when
+the key isn't set
+([`context.go:303-308`](https://github.com/gin-gonic/gin/blob/v1.12.0/context.go#L303-L308)), and
+the [Go spec](https://go.dev/ref/spec#The_zero_value) gives that as "`false` for booleans, `0` for
+numeric types, `""` for strings". A feature switch read with `c.GetBool("newCheckoutEnabled")` is
+off on that route, silently, for every request. A cousin of this bug: a value several features need,
+computed inside one feature's `if enabled { … }` block, is missing whenever that feature is off.
+Compute shared values outside any feature-flag branch.
+
+Group paths have the same "copy at registration" shape, and the same silent failure. A group's
+prefix is joined to every path registered under it, so moving a handler registered at
+`/stats/orders` into a group at `/dashboard/orders` without rewriting its path produces
+`/dashboard/orders/stats/orders`:
+
+```
+GET /dashboard/orders/stats           404
+GET /dashboard/orders/stats/orders    200
+```
+
+The fixes are structural, and they apply to any router:
+
+| Do | Because |
+|---|---|
+| Build the router in one function, used by `main` and by tests | A test of a router you assembled by hand tests your test |
+| Attach cross-cutting middleware once, at the shared parent, before any route or child group | Every route inherits it, including routes added next year |
+| Write the order down in that one place: recovery, then identity, then authentication, then authorisation | Each layer can rely on what the earlier ones set |
+| Register internal routes under a group too, or set the values they need explicitly | A route that skips middleware gets zero values, not errors |
+| Assert the route table and the side effects in tests | Nothing else will fail when wiring is wrong |
+
+The test that would have caught every case above drives requests through the real router. gin's
+[`Engine.Routes()`](https://github.com/gin-gonic/gin/blob/v1.12.0/gin.go#L388-L395) lists every
+registered method and path, so the test can cover routes nobody remembered to write a test for:
+
+```go
+func TestEveryAPIRouteRequiresAuth(t *testing.T) {
+    r := NewRouter(testDeps()) // the same constructor main uses
+    for _, rt := range r.Routes() {
+        if !strings.HasPrefix(rt.Path, "/api/") {
+            continue
+        }
+        w := httptest.NewRecorder()
+        r.ServeHTTP(w, httptest.NewRequest(rt.Method, rt.Path, nil)) // no credentials
+        if w.Code != http.StatusUnauthorized {
+            t.Errorf("%s %s without credentials: got %d, want 401", rt.Method, rt.Path, w.Code)
+        }
+    }
+}
+
+func TestRouteTable(t *testing.T) {
+    var got []string
+    for _, rt := range NewRouter(testDeps()).Routes() {
+        got = append(got, rt.Method+" "+rt.Path)
+    }
+    slices.Sort(got)
+    want := []string{
+        "GET /api/orders",
+        "GET /api/reports/daily",
+        "GET /dashboard/orders/stats",
+    }
+    if !slices.Equal(got, want) {
+        t.Errorf("routes:\n got %q\nwant %q", got, want)
+    }
+}
+```
+
+A path such as `/api/orders/:id` is sent literally, and `:id` matches the segment `:id` like any
+other. Add one test per side effect that moved into middleware: an audit row in a fake sink, a
+header, a metric. `http.ServeMux` has no route listing (its methods are `Handle`, `HandleFunc`,
+`Handler` and `ServeHTTP`), so with it, keep the patterns in a table you register from and test
+the table.
+
+<details><summary>Rust</summary>
+
+```rust
+// axum 0.8 has the opposite rule to gin's: `layer` wraps only the routes that already exist.
+// From the Router::layer docs: "Additional routes added after `layer` is called will not have
+// the middleware added." So routes first, then layers, and test through the built Router.
+// Layers run "from bottom to top": the last one added sees the request first.
+fn router() -> Router {
+    Router::new()
+        .route("/api/orders", get(orders))
+        .route("/api/reports/daily", get(daily))
+        .layer(middleware::from_fn(token))     // runs second
+        .layer(middleware::from_fn(identity))  // the outermost layer runs first
+}
+
+#[tokio::test]
+async fn every_api_route_requires_auth() {
+    for path in ["/api/orders", "/api/reports/daily"] {
+        let req = Request::builder().uri(path).body(Body::empty()).unwrap();
+        let res = router().oneshot(req).await.unwrap(); // tower::ServiceExt::oneshot
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "{path}");
+    }
+}
+```
+
+</details>
+
+<details><summary>C++</summary>
+
+```cpp
+// Without a framework, middleware is function wrapping, and the router-building function is
+// the one place the order is written down.
+using Handler = std::function<Response(const Request&)>;
+
+Handler with_identity(Handler next);
+Handler with_token(Handler next);
+
+Handler build_router(Deps& d) {
+    auto api = [&](const Request& r) { return route_api(d, r); };
+    return with_identity(with_token(api)); // identity runs first, then the token check
+}
+
+void test_every_api_route_requires_auth() {
+    Deps d = test_deps();
+    Handler h = build_router(d); // the same function main uses
+    for (const char* path : {"/api/orders", "/api/reports/daily"})
+        assert(h(Request{"GET", path}).status == 401);
+}
+```
+
+</details>
+
+<details><summary>JavaScript</summary>
+
+```js
+// Express runs middleware in the order it was loaded. From its guide: if middleware "is loaded
+// after the route to the root path, the request never reaches it", because the route handler
+// ends the request. So: one buildApp(), middleware first, and tests that use it.
+function buildApp(deps) {
+  const app = express();
+  const api = express.Router();
+  api.use(identity, token);           // identity first, then the token check
+  api.get("/orders", orders);
+  api.get("/reports/daily", daily);
+  app.use("/api", api);
+  return app;
+}
+
+test("every api route requires auth", async () => {
+  const app = buildApp(testDeps());
+  for (const path of ["/api/orders", "/api/reports/daily"]) {
+    const res = await request(app).get(path);   // supertest
+    expect(res.status).toBe(401);
+  }
+});
+```
+
+</details>
+
 ## Speed
 
 Router READMEs lead with speed, so it's worth measuring once: the same 26-route API in each
@@ -440,3 +648,8 @@ Where that leaves a decision:
 6. After `ContextWithFallback = true` is set, goroutines written the way gin's docs recommend
    (`cp := c.Copy(); go publish(cp, event)`) start failing with `context canceled`. Explain why,
    and what the goroutine should use instead.
+7. A refactor moves authentication into a gin middleware. The router code now reads
+   `api := r.Group("/api"); admin := api.Group("/admin"); api.Use(auth)`, and admin routes are
+   registered after that. Every existing handler test passes. What can an unauthenticated client
+   do, why, and which single test would have caught it? What would chi have done with the
+   equivalent ordering?

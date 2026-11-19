@@ -108,7 +108,9 @@ checks it. The database driver and `net/http` both do. A helper that starts from
 above, and chapters 2–4 keep coming back to that.
 
 `context.Background()` belongs at the roots: `main`, tests, and background jobs that
-genuinely belong to no request.
+genuinely belong to no request. Which context a goroutine that outlives its request should get,
+and what cleanup should run on, is in [chapter 5](05-fanning-out.md), "Goroutines that outlive
+their caller".
 
 ## Zero values: useful, and sometimes "no limit"
 

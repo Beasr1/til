@@ -1,4 +1,4 @@
-# 11. Exercises
+# 12. Exercises
 
 Worked answers to every **Check yourself** question, then things to try and questions
 worth asking me.
@@ -95,6 +95,32 @@ of the inbound request can't reach it. The helper should take a `ctx context.Con
 first parameter and derive any per-call timeout from it, for example
 `context.WithTimeout(ctx, 30*time.Second)`, which is then bounded by whichever deadline is
 sooner.
+
+**6. A token cache with no margin, a split check and use, and no collapsing.**
+
+Three ways to a bad request:
+
+- **No margin.** The cache treats the token as good until the last instant. A request that checks
+  it a second before expiry sends it, and by the time it arrives, perhaps after a retry, it has
+  expired: a 401. Worse, the expiry was counted from when the response *arrived*, while RFC 6749
+  counts `expires_in` "from the time the response was generated", so the cache already believes
+  the token lives a little longer than it does.
+- **Check and use split.** `ensureToken()` says the token is valid, then another goroutine clears
+  or replaces it before `getToken()` reads it. The request goes out with whatever is there now:
+  an empty string gives `Authorization: Bearer ` and a 401. The method has to return the token
+  from the same critical section that checked it.
+- **The token is shorter-lived than advertised, or revoked.** If the token is a JWT whose `exp` is
+  earlier than `expires_in`, or the provider revokes it, no margin helps. That's what the
+  invalidate-and-retry-once rule is for: RFC 6750 says the client "MAY request a new access token
+  and retry".
+
+At expiry, all 200 requests find the cache stale at once, and with nothing collapsing them, each
+fetches a new token: 200 token requests in a burst, and the provider may rate-limit or reject some,
+failing requests that had nothing wrong with them (measured, with 100 callers: 100 token requests
+without collapsing, 1 with `singleflight` and a re-check inside the flight). Fix all of it with an
+early-expiry margin counted from before the token request, a method that returns the token it
+checked, one refresh in flight (`singleflight`, or a mutex held across the fetch as `x/oauth2`
+does), and one retry on a 401 after invalidating that token.
 
 ---
 
@@ -271,6 +297,39 @@ across optional sources, enrichment that's nice to have. Then each task records 
 *and* error in its own slot and returns `nil` to the group, so the group never cancels, and the
 caller decides afterwards what to show and what to report as degraded.
 
+**7. A 30-second lease, no work deadline, release on the request context.**
+
+First failure: the release. When the proxy times out at 25 seconds and the client's connection
+closes, `r.Context()` is cancelled. The deferred `Release(r.Context())` then fails at once with
+`context canceled` (measured: a release that checks its context returns exactly that), so the lock
+stays held until its TTL runs out, and every other request for that record waits or fails in the
+meantime. Fix: release on a context that ignores the request's cancellation but has its own bound,
+`context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)`, and log a failed release.
+
+Second failure: the lease. The work has no deadline, so on a slow day it can run past 30 seconds.
+The lock expires mid-work, another request acquires it, and two workers are inside the critical
+section at once. Redis's own definition makes the validity time "the time the client has in order
+to perform the operation required before another client may be able to acquire the lock again".
+Fix: give the work a deadline strictly shorter than the TTL, such as
+`context.WithTimeout(ctx, ttl-5*time.Second)`, and pass that context to everything the work calls.
+Where correctness really matters, add fencing tokens, since a paused process can still overrun.
+
+**8. A recovered panic and a typed-nil error.**
+
+The day a lookup panics: the helper recovers it, but the send was the goroutine's last statement
+and never ran, so the caller's receive blocks for ever. The caller sees nothing, which is the
+worst outcome: the request hangs until a deadline, or for ever without one, and leaks the goroutine
+(measured: the receiver was still waiting after a second). Fix: send from a deferred function that
+also recovers and sets an error, on a channel with a buffer of one.
+
+The day every lookup succeeds: `res.err` is a nil `*LookupError`. Returning it as an `error`
+stores it in an interface holding `(T=*LookupError, V=nil)`, which the FAQ explains is non-nil.
+So the caller's `if err != nil` is true on every successful request, and it reports a failure that
+never happened. If it goes on to call `errors.Is` or `errors.As`, an `Unwrap` that reads through the
+nil receiver panics (measured: `nil pointer dereference` from `errors.Is` on a typed nil). Fix: make
+the field and the return type `error`, write a literal `nil` on success, and guard methods on
+pointer error types against a nil receiver.
+
 ---
 
 ## File 06 — Copies that share memory
@@ -419,6 +478,31 @@ next normal opportunity rather than with an emergency workaround. If a call stac
 treat it as urgent. A version scanner can't make this distinction, so its severity isn't the
 service's severity.
 
+**7. Internal modules under the old host, and a move next quarter.**
+
+A module path is the module's name and the prefix of every package path in it, so in the service:
+three `require` lines in `go.mod`, every `import` of those modules in code and tests, a regenerated
+`go.sum`, and possibly new versions, since each library publishes its new path from a new tag. In
+each library, the `module` line and its own internal imports change too. Nothing can be done by
+configuration alone, because the old host is written into source files.
+
+If one library is renamed and another isn't yet, and the unrenamed one imports the renamed one by
+its old path, the build can contain both paths. They're distinct modules, so two copies are
+compiled in, and a type from the old-path copy isn't the type the new-path code expects: values
+returned by one library can't be passed to the other. If the old path still resolves to code whose
+`go.mod` already declares the new path, the `go` command refuses it ("module declares its path as:
+… but was required as: …", measured). And if the old host is gone, private modules can't be fetched
+by the old path at all, since `GOPRIVATE` modules don't come from the public proxy. So rename in
+dependency order, libraries first, and mark the last old-path release `// Deprecated: use … instead.`
+so `go list -m -u` and `go get` point consumers at the new path.
+
+For next time, move the modules to vanity paths on a domain the organisation controls, such as
+`go.example.com/ledger`, with a page answering `?go-get=1` that carries
+`<meta name="go-import" content="go.example.com/ledger git https://git.newhost.example/libs/ledger">`.
+This move is the moment to do it, since it's a rename anyway. After that, changing host means
+changing the tag's repository URL, and no importer edits anything. The price is that the domain's
+HTTPS endpoint is now build infrastructure that has to stay up and stay owned.
+
 ---
 
 ## File 09 — Worker pools
@@ -557,6 +641,115 @@ of its own: `context.WithTimeout(context.WithoutCancel(c.Request.Context()), 5*t
 `WithoutCancel` "is not canceled when parent is canceled", and keeps values such as a trace id.
 Track the goroutine too, so shutdown waits for it (chapter 3, "Graceful shutdown").
 
+**7. `admin` created before `api.Use(auth)`.**
+
+Call every admin route without credentials. gin's `Group` copies its parent's middleware list when
+the group is created, and each route copies its group's list when the route is registered. `admin`
+was created while `api` had no middleware, so its routes' chains don't include `auth`, and the
+later `api.Use(auth)` appends to a list `admin` never reads again. Measured with the same shape:
+a child group created before `api.Use(identity, token)` served `200` with no organisation set and
+no token check. The existing tests pass because they call handlers directly, or build their own
+router with the middleware in the right place. The test that catches it builds the router with the
+same constructor `main` uses, walks `r.Routes()`, sends each `/api/` route a request with no
+credentials, and expects 401: it covers routes nobody remembered to test, including every admin
+route added later. Fix the wiring by calling `api.Use(auth)` (or passing `auth` to `r.Group`)
+before creating any child group or route. chi refuses the equivalent: calling `Use` on a mux
+after a route has been added panics with "chi: all middlewares must be defined before routes on a
+mux" (measured on chi v5.5.0, with `api.Route("/admin", …)` before `api.Use(auth)`), so the
+mistake stops the program at startup instead of shipping.
+
+---
+
+## File 11 — Classifying a dependency's errors
+
+**1. A billing client that returns `nil, nil`.**
+
+The gate's logic is "if the check returned an error, decide what to do; otherwise allow". A
+rejection from the billing service ("over the limit") reaches the client as an error, the client
+logs it and returns no result and no error, and the gate takes the "allow" branch. Every
+rejection becomes a success, so the check enforces nothing. Returning the error is necessary but
+not enough. If the gate then treats every error the same way, it still has to pick one answer for
+both "over the limit" and "timed out". Fail open and the over-limit accounts are still served;
+fail closed and a billing outage refuses everyone. The real fix is to return a typed error and
+classify it, so a rejection fails closed and only an unavailable dependency gets the gate's
+fail-open policy.
+
+**2. `500` with `ACCOUNT_NOT_FOUND`, classified by status.**
+
+The status class says 5xx, so the classifier says unavailable, and the gate fails open: a request
+for an account that doesn't exist goes ahead, unchecked and unbilled. If a breaker counts
+unavailable errors, every such request counts towards tripping it, so a burst of lookups for
+unknown accounts can open the breaker on a healthy dependency, and then every request takes the
+fail-open path. If 5xx rates page someone, they're paged for customers typing wrong account
+numbers. The classifier should key on the provider's code, `ACCOUNT_NOT_FOUND`, which is a
+rejection whatever the status, and use the status class only when there's no code it recognises.
+Add a test row for "not found, sent as 500", since it's a response someone has seen.
+
+**3. A breaker that searches for "unavailable".**
+
+The client turns every 5xx into an error whose message starts "service unavailable: ". When the
+dependency sends a rejection as a 500, the client wraps it with those words, the breaker's
+`strings.Contains` matches, and the rejection counts as a failure. Enough rejections in a row,
+which for a busy gate is ordinary traffic, open the breaker. The dependency is healthy and
+answering correctly; the caller has stopped calling it. With gobreaker's default settings this
+happens even without the string match, because the default `IsSuccessful` "returns false for all
+non-nil errors". The breaker should count only unavailable errors as failures: set `IsSuccessful`
+to return true for `err == nil` or `Classify(err) == ClassRejected`, and, on v2, exclude
+cancellations by the caller with `IsExcluded`. Classification comes from typed fields, found with
+`errors.As`, never from the message.
+
+**4. Reading the body twice.**
+
+`io.ReadAll` consumes the stream to EOF. The decoder then reads from the same, exhausted stream and
+gets `EOF` (measured: first read 58 bytes; second decode `EOF`, code `""`). The client falls back
+to a generic error with no status, the classifier can't see a code or a 4xx, and calls it
+unavailable, so the fail-open gate allows the request. Every rejection is allowed, and the log line
+even shows the correct JSON, which makes it look as though the classifier is wrong. The two fixes:
+read the body into bytes once, bounded with `io.LimitReader`, and both log and parse from the
+bytes; and make every fallback keep `resp.StatusCode`, so a body that won't parse degrades to
+"unknown 402", which the classifier handles deliberately, rather than to a status-less error that
+looks like an outage.
+
+**5. "context deadline exceeded" that `errors.Is` can't find.**
+
+The likely reason is that a layer formatted the cause into a new error instead of wrapping it:
+`fmt.Errorf("billing: %v", err)` or `errors.New(err.Error())`. The text survives and the identity
+doesn't, so `errors.Is` has nothing to walk to. A type that stores the cause but has no `Unwrap`
+method does the same. Use `%w`, or give the type an `Unwrap`. To answer both questions, have the
+upstream error unwrap to two errors, a sentinel for the dependency and the cause:
+
+```go
+func (e *UpstreamError) Unwrap() []error {
+    if e.Err == nil {
+        return []error{ErrBilling}
+    }
+    return []error{ErrBilling, e.Err}
+}
+```
+
+Since Go 1.20, `errors.Is` walks every branch, so `errors.Is(err, ErrBilling)` and
+`errors.Is(err, context.DeadlineExceeded)` are both true for a timed-out billing call, even after
+the caller wraps it again (measured). The `nil` check is required: the `errors` documentation calls
+an `Unwrap` that returns a slice containing `nil` invalid.
+
+**6. The overdraft floor, and a new code.**
+
+Accounts with a negative balance that's still above their floor are refused, though the balance
+service has approved them. The gate re-derived the decision from `available_balance` using the old
+rule ("negative means no"), and the owner's new rule ("negative down to the floor is fine") never
+reached it. The principle: the service that owns the balance makes the decision, and callers act on
+its explicit verdict, a success or a rejection code. Response fields are for display and logs.
+Delete the check.
+
+For the new code: if unknowns default to fail open, the new rejection is ignored and those requests
+are allowed until someone adds the code to the mapping. If they default to fail closed, it's
+enforced correctly, but if the new code had been a transient one, customers would have been refused
+instead. Neither default is right for every new code, which is why the default is only safe with
+two things around it: a counter and a log line for every unknown, with the status and code, so the
+mapping is updated in days; and a test table that makes adding the row a one-line change. Some teams
+use the status class as the tie-breaker (RFC 9110 says to treat an unrecognised status as the x00 of
+its class), which works exactly as well as the dependency's use of 4xx and 5xx.
+
 ---
 
 ## Things to try
@@ -580,6 +773,17 @@ Track the goroutine too, so shutdown waits for it (chapter 3, "Graceful shutdown
   it again.
 - In a gin handler, pass `c` to a function that waits on `ctx.Done()`, cancel the client after
   100 ms, and time how long the function runs. Then set `ContextWithFallback = true` and compare.
+- Write an `UpstreamError` with `Unwrap() []error`, wrap it twice with `fmt.Errorf("…: %w", err)`,
+  and check `errors.Is` against both the sentinel and `context.DeadlineExceeded`. Then change one
+  `%w` to `%v` and watch both checks go false.
+- Point an `httptest.Server` that returns a 402 with a JSON error code at a client that logs the
+  body with `io.ReadAll` and then decodes it. Print what the decoder gets.
+- In gin, create a child group, then call `Use` on its parent, then register a route on the child.
+  Drive it with `httptest` and print what the middleware set. Then try the same order in chi.
+- Start 100 goroutines that ask an empty token cache for a token, with a 50 ms fake token endpoint
+  that counts calls. Compare a check-then-fetch cache with one that uses `singleflight`.
+- Start a goroutine that sends its result as its last statement, wrap it in a helper that recovers,
+  make it panic, and see whether the receiver ever wakes. Then move the send into a defer.
 
 ## Questions worth asking me
 
@@ -593,3 +797,11 @@ Track the goroutine too, so shutdown waits for it (chapter 3, "Graceful shutdown
 - "Here's our `go.mod`. Which `replace` lines are still doing anything?"
 - "Here's our gin setup. Where do we pass `c` as a context, and where does a goroutine keep `c`?"
 - "Would moving this service from gin to chi or `ServeMux` be worth it? What would change?"
+- "Here's the client for a dependency that gates our requests. Which of its failures fail open, and
+  is that what we meant?"
+- "What does our circuit breaker count as a failure? Would a burst of legitimate rejections trip it?"
+- "Here's our router setup. Is there any route that skips the auth or audit middleware?"
+- "Here's our token cache. What happens at expiry under load, and on a 401?"
+- "Which goroutines in this service outlive a request, and which context does each one get?"
+- "We're moving Git hosting. What has to change in our Go modules, and should we set up vanity
+  paths first?"

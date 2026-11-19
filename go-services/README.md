@@ -4,7 +4,8 @@ A course on the parts of a Go HTTP service that look finished in development and
 slowly in production: the HTTP client's connection pool, what the server's timeouts
 really bound, how deadlines and retries interact, copies that aren't copies, time zones
 in minimal images, worker pools that mislabel or drop results, a router or framework chosen by
-habit, and dependency bumps that change your toolchain or quietly pin an old version.
+habit, a dependency's errors read so loosely that its rejections fail open, and dependency bumps
+that change your toolchain or quietly pin an old version.
 
 **This is reference learning material.** Everything here is general Go, checked against
 the standard library source and documentation for Go 1.26. Where behaviour matters and
@@ -18,7 +19,7 @@ I wrote this as a teacher, not as a peer. That means:
 - I explain things you might already know. Skim if so.
 - Why before how: the failure comes before the fix.
 - Every chapter ends with **Check yourself** questions. Answers are in
-  [11-exercises.md](11-exercises.md).
+  [12-exercises.md](12-exercises.md).
 - Measurements are labelled as measurements, and computed figures as computed.
 
 ## The one thing to understand first
@@ -46,14 +47,20 @@ running it, rather than what its name suggests.
 | [IANA tz database](https://github.com/eggert/tz) | Whether a zone has daylight saving |
 | [Go toolchains](https://go.dev/doc/toolchain) / [release policy](https://go.dev/doc/devel/release#policy) | The `go` line as a minimum, `GOTOOLCHAIN`, support windows |
 | [Go spec: channel types](https://go.dev/ref/spec#Channel_types) / [Go 1.25 release notes](https://go.dev/doc/go1.25) / [GODEBUG](https://go.dev/doc/godebug) | Channel blocking; container-aware `GOMAXPROCS` and how its default follows the `go` line |
-| [errgroup](https://pkg.go.dev/golang.org/x/sync/errgroup) | Fan-out with shared cancellation and limits |
+| [errgroup](https://pkg.go.dev/golang.org/x/sync/errgroup) | Fan-out with shared cancellation and limits; why it doesn't propagate panics |
+| [singleflight](https://pkg.go.dev/golang.org/x/sync/singleflight) / [`x/oauth2`](https://pkg.go.dev/golang.org/x/oauth2) | Collapsing concurrent refreshes; a reference token cache and its expiry delta |
+| [RFC 6749](https://www.rfc-editor.org/rfc/rfc6749.html) / [RFC 6750](https://www.rfc-editor.org/rfc/rfc6750.html) / [RFC 7519](https://www.rfc-editor.org/rfc/rfc7519.html) | Client credentials and `expires_in`; `invalid_token` and 401; the JWT `exp` claim |
 | [Kubernetes probes](https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/) | Liveness, readiness and startup, and the cascading-failure warning |
 | [Exponential Backoff And Jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/) / [Timeouts, retries, and backoff with jitter](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/) | Backoff variants and retry practice, by Marc Brooker |
-| [Go modules reference](https://go.dev/ref/mod) | What a version-less `replace` replaces; `-mod=readonly` |
+| [Go modules reference](https://go.dev/ref/mod) / `go help importpath` | What a version-less `replace` replaces; `-mod=readonly`; module paths, deprecation, and the `go-import` meta tag |
 | [govulncheck tutorial](https://go.dev/doc/tutorial/govulncheck) | Reachability: imported but not called |
 | [POSIX crontab](https://pubs.opengroup.org/onlinepubs/9799919799/utilities/crontab.html) | Day-of-month OR day-of-week; weekday range |
 | [gin](https://github.com/gin-gonic/gin) and its [docs](https://github.com/gin-gonic/gin/blob/v1.12.0/docs/doc.md) | gin's handler type, binding, groups, `c.Next` and `c.Abort`, pooled contexts, `ContextWithFallback` |
 | [chi](https://github.com/go-chi/chi) | An `http.Handler`-compatible router with groups and `Mount` |
+| [`errors`](https://pkg.go.dev/errors) / [Go 1.20 release notes](https://go.dev/doc/go1.20#errors) / [Working with Errors in Go 1.13](https://go.dev/blog/go1.13-errors) | The error tree, `Is` and `As`, `Unwrap() []error`, and wrapping as API |
+| [RFC 9110 §15](https://www.rfc-editor.org/rfc/rfc9110.html#section-15) / [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html) | Status classes, unrecognised codes, 402; machine-readable problem types |
+| [sony/gobreaker](https://github.com/sony/gobreaker) | What a circuit breaker counts as a failure: `IsSuccessful`, `IsExcluded` |
+| [Avoiding fallback in distributed systems](https://aws.amazon.com/builders-library/avoiding-fallback-in-distributed-systems/) / [SRE book ch. 22](https://sre.google/sre-book/addressing-cascading-failures/) | Why rarely-run fallback paths fail, and not retrying permanent errors |
 | [Alex Edwards](https://www.alexedwards.net/blog/which-go-router-should-i-use), [Eli Bendersky](https://eli.thegreenplace.net/2023/better-http-server-routing-in-go-122/) and [Jon Calhoun](https://calhoun.io/go-servemux-vs-chi) on routers | Three practitioners on choosing between `ServeMux`, third-party routers and frameworks |
 
 ## Reading order
@@ -68,11 +75,12 @@ running it, rather than what its name suggests.
 
 | # | File | After this you can… |
 |---|------|---------------------|
-| 2 | [The HTTP client](02-the-http-client.md) | ⭐ Spot a per-request Transport, and build a client that pools, times out and proxies correctly |
+| 2 | [The HTTP client](02-the-http-client.md) | ⭐ Spot a per-request Transport, build a client that pools, times out and proxies correctly, and cache a bearer token that doesn't expire in flight or stampede the identity provider |
 | 3 | [The HTTP server](03-the-http-server.md) | Say what each server timeout bounds, put a real deadline on handler work, tell a client that went away from a real failure, shut down without dropping requests, and keep dependencies out of liveness probes |
 | 4 | [Deadlines and retries](04-deadlines-and-retries.md) | ⭐ Make a retry budget fit inside a request's deadline, and retry only what can succeed |
-| 10 | [Routing and frameworks](10-routing-and-frameworks.md) | Route with Go 1.22 `ServeMux` patterns, spot a gin handler whose `c` ignores cancellation or outlives its request, and choose between `ServeMux`, chi and gin on features rather than speed. Read after 3 and 4 |
-| 5 | [Fanning out](05-fanning-out.md) | Replace a hand-counted WaitGroup fan-out with `errgroup`, and bound its concurrency |
+| 10 | [Routing and frameworks](10-routing-and-frameworks.md) | Route with Go 1.22 `ServeMux` patterns, spot a gin handler whose `c` ignores cancellation or outlives its request, wire middleware so no route can skip it and test the wiring through the real router, and choose between `ServeMux`, chi and gin on features rather than speed. Read after 3 and 4 |
+| 11 | [Classifying a dependency's errors](11-classifying-a-dependencys-errors.md) | ⭐ Sort a dependency's failures into rejected, unavailable and unknown in one tested function, decide fail open or closed only where there's a choice, match errors through wrapping with `errors.Is` and `errors.As`, and read a response body once. Read after 2 and 4 |
+| 5 | [Fanning out](05-fanning-out.md) | Replace a hand-counted WaitGroup fan-out with `errgroup`, and bound its concurrency; give a goroutine the context its lifetime needs, make a recovered panic still deliver a result, release locks on a fresh context, and avoid the typed-nil error |
 | 9 | [Worker pools](09-worker-pools.md) | Pair batch results with their inputs by key, make a pool report partial failure, and size deadlines for queued work. Read after 5 |
 
 ### Part 2 — Inside the process
@@ -81,19 +89,20 @@ running it, rather than what its name suggests.
 |---|------|---------------------|
 | 6 | [Copies that share memory](06-copies-that-share-memory.md) | Predict which fields a struct copy shares, and pick a cloning strategy |
 | 7 | [Time in a container](07-time-in-a-container.md) | Make time-zone handling work in `scratch`, judge identifiers built from timestamps, and test a hand-parsed cron schedule |
-| 8 | [When a dependency moves your toolchain](08-when-a-dependency-moves-your-toolchain.md) | Explain why a dependency bump broke the image build, pin a patched transitive dependency without a hidden downgrade, and judge a scanner finding |
+| 8 | [When a dependency moves your toolchain](08-when-a-dependency-moves-your-toolchain.md) | Explain why a dependency bump broke the image build, pin a patched transitive dependency without a hidden downgrade, judge a scanner finding, and plan a module rename or a vanity import path |
 
 ### Reference
 
 | # | File | |
 |---|------|---|
-| 11 | [Exercises & answers](11-exercises.md) | Worked answers, things to try, and questions to ask |
+| 12 | [Exercises & answers](12-exercises.md) | Worked answers, things to try, and questions to ask |
 
 Read chapter 1 first. Then read 2 → 3 → 4 in order: chapter 4 builds on the context discussion
 in 2 and the server timeouts in 3. Chapter 5 needs chapter 1's channel rules. Chapter 9 was
 added later and takes the next number, but belongs straight after 5, which it builds on, so it's
 listed there. Chapter 10 was added later too. It builds on 3's handler contexts and adds a third
-break to 4's chain, so it's listed after 4. Chapters 6, 7 and 8 are independent of each other and of Part 1. Not yet written, and belonging here: structured
+break to 4's chain, so it's listed after 4. Chapter 11 was added later still. It builds on 2's
+response bodies and 4's "retry only what can succeed", so it's listed after 10. Chapters 6, 7 and 8 are independent of each other and of Part 1. Not yet written, and belonging here: structured
 logging and what not to log, metrics and cardinality, database connection pools, and profiling
 with `pprof`.
 
@@ -103,17 +112,27 @@ with `pprof`.
 - **10 minutes:** chapter 2's measurement table, then chapter 3's "`WriteTimeout` doesn't
   stop your handler".
 - **A service's goroutines or file descriptors climb steadily:** chapter 2.
+- **Intermittent 401s from an OAuth-protected API, or token requests spiking at expiry:**
+  chapter 2, "Caching a bearer token".
 - **Writing a retry helper, or reviewing one:** chapter 4, "Add up the worst case" and the
   two small bugs after "Backoff".
 - **The error log is full of `context canceled`, or nginx logs 499s:** chapter 3, "When the client
   goes away".
 - **Requests to a fan-out endpoint hang until timeout:** chapter 5.
+- **A background consumer quietly stopped, or locks stay held after timeouts:** chapter 5,
+  "Goroutines that outlive their caller".
 - **Batch results are attached to the wrong records, or failures vanish:** chapter 9.
+- **A gate lets through requests its dependency rejected, or a breaker trips on a healthy
+  dependency:** chapter 11, "Three classes, not two" and "One adapter, one function".
 - **Choosing a router or framework for a new service:** chapter 10, "How to choose".
 - **Queries in a gin service keep running after clients give up:** chapter 10's warning on `c` as
   a `context.Context`.
+- **Audit rows, auth or request values are missing on some routes:** chapter 10, "Wiring
+  middleware so nothing skips it".
 - **Dates are off by one in production only:** chapter 7.
 - **A security bump broke the Docker build, or you're pinning a CVE fix:** chapter 8.
+- **Your Git hosting is moving and every Go import names the old host:** chapter 8, "When the
+  dependency itself moves".
 
 ## The one-paragraph summary of everything
 
@@ -125,7 +144,11 @@ Transports "should be reused instead of created as needed". One per request open
 connections for 200 calls and left 600 goroutines alive, because a zero-value Transport has
 no idle timeout. It also drops `DefaultTransport`'s proxy support, dial and handshake
 timeouts, so clone the default once and share it. Bodies must be read and closed for
-connections to be reused. On the server, `ReadHeaderTimeout` is the one to always set.
+connections to be reused. A cached bearer token should expire early, by the larger of a fixed
+margin and a fraction of its lifetime, counted from before the token request; the cache should
+return the token from the same critical section that checked it, let only one refresh run at a
+time (100 concurrent callers made 100 token requests without collapsing, 1 with `singleflight`),
+and treat a 401 as a reason to invalidate that token and retry once. On the server, `ReadHeaderTimeout` is the one to always set.
 `WriteTimeout` bounds only the response write: a handler under it ran to completion with
 its context never cancelled, and the client waited the whole time and got `EOF`. Real
 deadlines come from the handler's context, via `TimeoutHandler` or `context.WithTimeout`,
@@ -140,7 +163,13 @@ references, so writes through the "copy" reach the original, and `maps.Clone` is
 Prefer functions that return new values over functions that mutate their input. A hand-rolled
 fan-out with a `WaitGroup` and buffered channels hangs and leaks when a buffer size falls one
 behind the number of senders. `errgroup` removes the counting and cancels the rest on the first
-error. Liveness probes must never check dependencies.
+error. A goroutine lives as long as the context it's given, so a consumer started on a setup
+context stops when setup ends; background loops take a process-lifetime context, and side effects
+and must-run cleanup such as releasing a lock take `context.WithoutCancel` plus their own timeout,
+with work under a lease bounded below its TTL. A panic in any goroutine ends the process, so a
+fire-and-forget goroutine needs its own `recover` and copied inputs, and a fan-out goroutine should
+send its result from a defer so a recovered panic doesn't leave the receiver waiting for ever. A nil
+pointer returned as an `error` is not a nil error. Liveness probes must never check dependencies.
 `time.LoadLocation` needs the IANA database at run time, and neither `alpine` nor `scratch`
 provides it. Embed it with `time/tzdata` and fail at startup rather than falling back to
 UTC. A fixed offset is exact only for zones without daylight saving. Timestamp-plus-random
@@ -150,7 +179,10 @@ Go 1.21 the `go` line is a minimum that dependencies can raise, and the official
 transitive dependency, raise a requirement with `go get`: a version-less `replace` replaces all
 versions, so it silently downgrades the day something needs newer (measured: `v1.80.0 =>
 v1.79.3`), and it does nothing in a library. Scanners match versions; `govulncheck` tells you
-whether the vulnerable code is called. Hand-parsed cron schedules need table tests: POSIX ORs
+whether the vulnerable code is called. A module path is the module's permanent name and the
+prefix of every import, so moving a repository to a new host renames the module and edits every
+consumer; a vanity path on a domain you control, served with a `go-import` meta tag, makes the next
+move a one-line change to that tag. Hand-parsed cron schedules need table tests: POSIX ORs
 day-of-month with day-of-week, and a parser that treats `0` as "0 onwards" runs an hourly job
 every minute. Worker pools that append results under a mutex return them in completion order,
 so pairing `results[i]` with `inputs[i]` mislabels data; write to `results[i]` or carry the
@@ -162,8 +194,23 @@ and neither is more specific, and answers a wrong method with 405 and `Allow`. A
 line predates 1.22 gets the old mux, which answers 404 to every method pattern. gin adds binding, validation and groups, at the price of its
 own handler type and 19 compiled-in modules. Its `*gin.Context` is pooled, so a goroutine that keeps
 it reads a later request's data (490 of 500 did, measured), and as a `context.Context` it ignores
-the request's cancellation and deadline unless `ContextWithFallback` is set. Routing costs tens to
+the request's cancellation and deadline unless `ContextWithFallback` is set. gin copies middleware
+into a route, and a group copies its parent's, at registration, so `Use` after a route or child
+group misses them silently (a child group created first served requests with no auth, measured),
+where chi panics. Middleware never registered, attached in the wrong order, or skipped by a route
+outside the group fails without an error, and request values read there are zero values. Build the
+router in one function and test through it, walking `Engine.Routes()`. Routing costs tens to
 hundreds of nanoseconds, under 1% of a loopback request, so choose a router for its features.
+When a dependency gates a request, classify its failures in one tested function: rejected (it
+answered no, so fail closed), unavailable (no answer, so apply the gate's fail-open or fail-closed
+policy and retry), and unknown (a code or body you can't read, given a default on purpose and
+counted). Classify on the provider's error code, not the status alone, since services send "not
+found" as 500 and failures inside 200s, and never on message text, which every wrapping layer
+changes. Act on the owner's verdict instead of re-deriving it, keep "no" out of `error` and "not
+reported" apart from zero, and let a breaker count only unavailability. Match errors with
+`errors.Is` and `errors.As`, which walk the wrap tree that `==`, string comparison and type
+assertions can't, and since Go 1.20 one error can unwrap to both a sentinel and its cause. A
+response body is a one-shot stream: read it into bytes once, and keep the status in every fallback.
 
 ## How to use me
 
@@ -176,3 +223,5 @@ Ask me things like:
 - "What does this binary need from the OS that a `scratch` image won't have?"
 - "We're bumping this dependency. What else in the repo has to move with it?"
 - "We're starting a new service. `ServeMux`, chi or gin, and which defaults would we change?"
+- "This check calls another service before every request. Which of its errors let the request
+  through?"
