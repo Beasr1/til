@@ -524,4 +524,4 @@ browser does.
    blank page yesterday comes back today, and the HTML hasn't changed since. What do they see,
    and why? Name two things that would recover them, and one thing that won't.
 
-(Answers in [`10-exercises.md`](10-exercises.md).)
+(Answers in [`11-exercises.md`](11-exercises.md).)

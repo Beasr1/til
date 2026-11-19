@@ -1,4 +1,4 @@
-# 10. Exercises
+# 11. Exercises
 
 Worked answers to every **Check yourself** question, plus things to try.
 
@@ -69,6 +69,54 @@ Browsers never see your origin server's address because they never connect to it
 They connect to the CDN using the hostname in the URL, so every same-origin and
 CORS decision is made on that URL's scheme, host and port. Where the bytes really
 came from is invisible to them, and irrelevant.
+
+**7. `PATCH` and `DELETE` refused in the customer's environment.**
+
+Something in front of your server: most likely a WAF, possibly a reverse proxy or a
+gateway. Three clues point there. Your access log has nothing, so the request never reached
+you. The body is HTML your application doesn't produce. And a refusal from your own router
+would more likely be a `405` with an `Allow` header, which RFC 9110 requires on a `405`.
+The `403` is the WAF's choice of status, and it's misleading: it reads like your own
+authorisation failing. A WAF running the OWASP Core Rule Set at its defaults allows only
+`GET HEAD POST OPTIONS`, so this is exactly what you'd see.
+
+To confirm, send the same method from inside the environment along the real path, with
+`curl -i -X PATCH …`, then send `GET` or `POST` to the same URL. If those reach you and
+`PATCH` doesn't, it's a method rule. Then ask whoever runs the WAF or proxy for its method
+list, or find it in the WAF's logs, where a CRS refusal is logged as "Method is not allowed
+by policy".
+
+When `POST /orders/42/delete` times out, the client has lost the right to retry it
+automatically. `DELETE` is idempotent, so a client or proxy could have resent it safely: if
+the first one landed, the second deletes nothing more. `POST` makes no such promise, and RFC
+9110 says a client "SHOULD NOT automatically retry" it and a proxy "MUST NOT". The operation
+didn't change; what changed is that nothing on the path can know it's safe. To get it back,
+send an idempotency key with each logical request and have the server record the key with
+the result, so a retry with the same key returns the stored result instead of acting twice.
+For a delete, the server could also simply treat "already deleted" as success, which makes
+the retry harmless by design. But the client only knows it can rely on that if your API
+documents it.
+
+**8. A query string built by concatenation.**
+
+The URL on the wire is `/events?from=2026-03-01T00:00:00+05:30&tags=a&b,c`. Go's
+`r.URL.Query()` decodes it as a form, so:
+
+- `from` is `2026-03-01T00:00:00 05:30`. The `+` became a space, and the timestamp no
+  longer parses.
+- `tags` is `a`. The `&` inside the first tag ended the value.
+- There's a third key, `b,c`, with an empty value, made from the rest of the tags.
+
+Nothing errors at the URL layer. The server gets three well-formed keys, two of them wrong.
+
+With `new URLSearchParams({ from, tags })`, `from` is encoded properly
+(`2026-03-01T00%3A00%3A00%2B05%3A30`) and arrives intact. But the array is turned into a
+string first, `"a&b,c"`, so the wire carries `tags=a%26b%2Cc` and the server gets one value,
+`a&b,c`. It can't split it on commas without breaking any tag that contains a comma. With
+`append("tags", t)` for each tag, the wire carries `tags=a%26b&tags=c`, and the server's
+`q["tags"]` is `["a&b", "c"]`, two values, each intact. That's the form Go's own
+`url.Values.Add` produces, so it's the one to agree on with a Go server. I checked all three
+by running them, which is the habit the chapter is asking for.
 
 ## Things to try — file 01
 
@@ -1075,6 +1123,124 @@ set it to a minute, type into a form without saving, wait two minutes, then save
 page keep what you typed, or send you to sign in without it? Then list the requests the
 page makes on its own, such as polls and health checks, and find which of them the server
 counts as use: each one keeps an abandoned tab signed in.
+
+---
+
+## File 10 — Authorisation: whose object is this?
+
+**1. A manager reads another tenant's invoice.**
+
+Tenant B's invoice comes back. The route check asked the function-level question, "may a
+manager call this route?", and the answer was yes, correctly. The query then fetched by ID
+alone, so nothing asked the object-level question, "is this invoice in the caller's
+tenant?". The fix is a condition in the query, `WHERE id = $1 AND tenant_id = $2`, with the
+tenant from the verified token. That also makes the answer a `404`, which doesn't confirm
+that invoice exists.
+
+Comparing user IDs wouldn't help because there's no user ID in this URL to compare. The
+object is an invoice, and what makes it someone else's is its tenant, which only the row
+knows. That's why OWASP calls the comparison "not a sufficient solution": it "could
+address only a small subset of cases", the ones where the URL happens to name the user. The
+check has to be about the object, wherever it came from.
+
+**2. The precedence bug and the `$or` bug.**
+
+SQL first. `AND` binds tighter than `OR`, so the clause is
+`(tenant_id = $1 AND email = $2) OR phone = $3`. The email matches nothing, so the left
+half is false for every row, and the right half matches tenant B's customer by phone. The
+caller gets a row from another tenant. Parentheses round the alternatives fix it:
+`tenant_id = $1 AND (email = $2 OR phone = $3)`.
+
+MongoDB: the tenant is one of the alternatives, so the filter reads "email matches, or
+phone matches, or the row is in this tenant". Neither key matches, but every document in
+the caller's tenant satisfies the third branch, so the query returns all of them, or the
+first one if the code calls `findOne`. That's the nastier failure. It stays within the
+tenant, so nobody sees another customer's data, but a lookup for a person who doesn't exist
+returns a different person, and the caller acts on them. The fix is the same shape: the
+tenant at the top level, where MongoDB ANDs it with the `$or`.
+
+Both pass a test that looks up a real customer by a real key. Only a key that matches
+nothing, or matches in another tenant, shows the bug.
+
+**3. The operator's retry runs in the wrong tenant.**
+
+The retry handler takes the tenant from the operator's token, which is the operator's own
+organisation, not tenant B. Best case, the job isn't found and the retry fails with a
+confusing `404`. Worst case, the operator's organisation has a job with the same ID, and the
+retry runs against the wrong tenant's data.
+
+The cause is that each handler decides for itself where the tenant comes from, and this
+one decided differently from the page that listed the jobs. The design that stops it is a
+single middleware that resolves the effective tenant once, honouring `?tenant=` only for a
+role that may act on behalf of others, and puts the result in the request context. Handlers
+read that one value. A new handler then can't pick the wrong source, because it isn't
+offered one.
+
+**4. The listing applies entitlements; the gate doesn't.**
+
+A user in that tenant can call the reporting API directly, with `curl` or the browser's
+console, using their own valid session. The gate sees a role that grants `reports:read` and
+lets it through. The hidden menu was the only thing in the way, and hiding is presentation,
+not enforcement.
+
+Adding the entitlement to the gate in its own code makes today's behaviour right and sets
+up the next drift. The two places now hold two copies of the rule. Someone adds a product,
+or changes how core features are recognised, in one copy, and the listing and the gate
+disagree again, in one direction (buttons that fail) or the other (hidden features that
+work). The fix is one function that evaluates permission and entitlement together, called
+by both the gate and the listing, so they can't disagree.
+
+**5. A denylist meets a new column.**
+
+Every response that goes through the loader: the customer endpoint, and the new export.
+The deletes remove the two fields someone thought of. The notes column is new, so nothing
+deletes it, and the export inherits the leak without anyone having touched the customer
+endpoint.
+
+Redesign: give the API a response type of its own, with only the fields a caller may see,
+and build it field by field from the record, deciding role-dependent fields there. A new
+column in the record then appears in no response until someone adds it to the view on
+purpose. If the export needs different fields, it gets its own view. As a second layer, a
+response schema that drops unlisted properties, as Fastify's serialiser does, catches a
+handler that returns the raw record by mistake. It's a net under the view, not a substitute
+for it: a field the schema lists goes to everyone the handler returns it to.
+
+**6. A hidden tab and a guard with two states.**
+
+The non-admin sees nothing on screen but everything in the Network tab. The tab is hidden;
+the request it depends on still runs at page load, and the response, documents included,
+sits in DevTools. The client fix is to make the fetch depend on the same condition as the
+display, with TanStack Query's `enabled: user?.isAdmin === true`, so the request is never
+sent.
+
+On a hard refresh, `user` is `null` for the first render while the token is decoded or
+`/me` is in flight. The guard reads `null` as "not allowed" and redirects the admin to
+"access denied" before it knows who they are. The client fix is a third state: while
+identity isn't resolved, show loading; decide only once it is.
+
+Neither fix changes anything on the server, and that's the point. Both are about what the
+page shows and when it asks. The documents endpoint still has to refuse non-admins itself,
+because anyone can send the request the page no longer sends. If it doesn't, the client fix
+has only made the leak harder to notice.
+
+## Things to try — file 10
+
+**Swap an ID.** Sign in to an app you run as two users in two different tenants. Copy an
+object URL from one, open it as the other, and see whether you get the object, a `403` or a
+`404`. Then try it with the ID in the request body of a write, which is the check people
+forget.
+
+**Feed a lookup keys that match nothing.** For every "find by any of these" query, call it
+with keys that exist in no tenant. Anything other than "not found" means a scope has ended
+up inside an `OR`.
+
+**Diff a response against its record.** Take one stored record and the JSON an endpoint
+returns for it, and list every field in the JSON that the screen never shows. Each one is
+either a field the view should drop or one a screen is about to need.
+
+**Watch the Network tab as a lesser role.** Sign in with the lowest role and visit every
+page. Any response containing data the screen hides is a client-side gate standing in for a
+server-side one.
 
 ---
 

@@ -5,8 +5,9 @@ rides on, how a response is framed
 on the wire, how the client and server agree on which version to speak, why
 that layer can throw away a response your logs recorded as successful, and what
 QUIC changes by moving streams down into the transport — plus the browser's rules
-about which pages may read which responses, how it keeps a user signed in, and what a
-cache does with a response it has stored.
+about which pages may read which responses, how it keeps a user signed in, what a
+cache does with a response it has stored, and how a server decides which records and which
+fields a signed-in caller may have.
 
 **This is reference learning material.** Everything here is general HTTP, TLS and
 QUIC, checked against the RFCs listed below. The motivating failure is
@@ -18,7 +19,7 @@ I wrote this as a teacher, not as a peer. That means:
 - I explain things you might already know. Skim if so.
 - Why before how — the problem that forced each mechanism comes before its name.
 - Every file ends with **Check yourself** questions. Answers are in
-  [10-exercises.md](10-exercises.md).
+  [11-exercises.md](11-exercises.md).
 - Every protocol claim is quoted from the RFC, not recalled.
 
 ## The one thing to understand first
@@ -47,8 +48,12 @@ is:
 | [RFC 9111 — HTTP Caching](https://www.rfc-editor.org/rfc/rfc9111.html) | §3.2 how a cache updates stored header fields, and its four exceptions; §4 when a stored response may be reused; §4.2 freshness and §4.2.2 heuristic freshness; §4.3.4 freshening a stored response from a `304`; §5.2.2 `max-age`, `no-cache` and `no-store` |
 | [RFC 8246 — HTTP Immutable Responses](https://www.rfc-editor.org/rfc/rfc8246.html) | §2, no conditional request during a response's freshness lifetime, not even on a reload |
 | Browser source: [Chromium](https://github.com/chromium/chromium/blob/2b5d649769f63662fd563c9e41d9e5a2c65acd0a/net/http/http_response_headers.cc#L89-L109), [Firefox](https://github.com/mozilla-firefox/firefox/blob/e5b6db0c400c71559261e4ab18f0fbdb48d69ef0/netwerk/protocol/http/nsHttpResponseHead.cpp#L830-L876), [WebKit](https://github.com/WebKit/WebKit/blob/e427188d73fb165e49a4aade8c172b47ea6fbe02/Source/WebCore/platform/network/CacheValidation.cpp#L47-L94) | The header fields each engine refuses to take from a `304`. Everything else overwrites the stored copy |
+| [OWASP Core Rule Set v4.30.0](https://github.com/coreruleset/coreruleset/blob/v4.30.0/crs-setup.conf.example) and nginx [`limit_except`](https://nginx.org/en/docs/http/ngx_http_core_module.html#limit_except) | A widely used WAF ruleset that allows only `GET HEAD POST OPTIONS` by default (rule 911100) and restricts `X-HTTP-Method-Override`; how a proxy limits a location's methods |
 | [nginx headers module](https://nginx.org/en/docs/http/ngx_http_headers_module.html#add_header) and [map module](https://nginx.org/en/docs/http/ngx_http_map_module.html) | `add_header` applies to `304` responses; the order in which `map` tries its values |
 | [nginx CHANGES](https://nginx.org/en/CHANGES) (1.7.3) and Apache httpd [`DeflateAlterETag`](https://httpd.apache.org/docs/2.4/mod/mod_deflate.html#deflatealteretag) | What two compressing proxies do to a strong `ETag`: nginx makes it weak, Apache appends a suffix |
+| [RFC 3986 — URI Generic Syntax](https://www.rfc-editor.org/rfc/rfc3986.html) | §2.1 percent-encoding, §3.2.1 userinfo and why `user:password` in it is deprecated, §3.4 the query component |
+| [WHATWG URL Standard](https://url.spec.whatwg.org/#application/x-www-form-urlencoded) | §5, `application/x-www-form-urlencoded`: a `+` decodes to a space; `URLSearchParams` writes a space as `+` |
+| Go [`net/url`](https://pkg.go.dev/net/url) and axios [`paramsSerializer`](https://github.com/axios/axios/blob/v1.x/README.md) | `Values.Encode`, `PathEscape` versus `QueryEscape`, `UserPassword`; axios's default of empty brackets for arrays |
 | [RFC 6454 — The Web Origin Concept](https://www.rfc-editor.org/rfc/rfc6454.html) | §3.2, an origin is scheme + host + port |
 | [WHATWG Fetch Standard](https://fetch.spec.whatwg.org/#http-cors-protocol) | The CORS protocol: safelisted requests, preflight, the credentials table, `Vary: Origin`; §4.6 HTTP-network-or-cache fetch, where a `304` updates the stored response's headers |
 | [RFC 6265 — HTTP State Management (cookies)](https://www.rfc-editor.org/rfc/rfc6265.html) | `Set-Cookie` and `Cookie`: how a stateless protocol gets sessions; §4.1.2.5, "secure" is "defined by the user agent" |
@@ -64,6 +69,13 @@ is:
 | [RFC 9700 — Best Current Practice for OAuth 2.0 Security](https://www.rfc-editor.org/rfc/rfc9700.html) | §4.14, refresh-token rotation, and how a stolen refresh token gives itself away |
 | [RFC 10017 — OAuth 2.0 for Browser-Based Applications](https://www.rfc-editor.org/rfc/rfc10017.html) | §6, the patterns "in decreasing order of security", with the backend for frontend first |
 | [OWASP Logging Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html) | Session identifiers and access tokens among the data to exclude from logs |
+| [OWASP API Security Top 10 2023](https://api-security.owasp.org/editions/2023/en/0x11-t10/) | [API1](https://api-security.owasp.org/editions/2023/en/0xa1-broken-object-level-authorization/) object-level authorisation, and why comparing user IDs isn't enough; [API3](https://api-security.owasp.org/editions/2023/en/0xa3-broken-object-property-level-authorization/) property-level, "cherry-pick specific object properties"; [API5](https://api-security.owasp.org/editions/2023/en/0xa5-broken-function-level-authorization/) function-level, "deny all access by default" |
+| [OWASP Authorization Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html) | Horizontal and vertical least privilege, checks on every request for the specific object, never relying on client-side checks, and its preference for ABAC and ReBAC over RBAC |
+| [OWASP Top 10:2025 A01](https://top10.owasp.org/2025/A01_2025-Broken_Access_Control) | Broken Access Control still first; insecure direct object references; access control only in "trusted server-side code" |
+| [Casbin — RBAC with domains](https://casbin.apache.org/docs/rbac-with-domains/) | Roles scoped to a tenant, and a matcher that requires the request's tenant to equal the policy's |
+| [PostgreSQL §4.1.6](https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-PRECEDENCE), MongoDB [`$and`](https://www.mongodb.com/docs/manual/reference/operator/query/and/) and [`$or`](https://www.mongodb.com/docs/manual/reference/operator/query/or/) | `AND` binds tighter than `OR`; a document filter's top-level fields are ANDed |
+| [Fastify — Validation and Serialization](https://fastify.dev/docs/latest/Reference/Validation-and-Serialization/), [fast-json-stringify](https://github.com/fastify/fast-json-stringify#additionalProperties) | A response schema as a net against disclosure: unlisted properties are ignored |
+| [TanStack Query — Dependent Queries](https://tanstack.com/query/latest/docs/framework/react/guides/dependent-queries) | The `enabled` option, and the `pending`/`idle` state of a query that hasn't been allowed to run |
 | [RFC 6066 — TLS Extensions](https://www.rfc-editor.org/rfc/rfc6066.html) | §3, Server Name Indication |
 | [RFC 9113 — HTTP/2](https://www.rfc-editor.org/rfc/rfc9113.html) | Frames, streams, `END_STREAM`, `RST_STREAM`, the error-code table, the `h2` identifier |
 | [RFC 7301 — ALPN](https://www.rfc-editor.org/rfc/rfc7301.html) | The TLS extension, who selects, and what happens with no overlap |
@@ -98,7 +110,7 @@ The file numbers are the reading order.
 
 | # | File | After this you can… |
 |---|------|---------------------|
-| 1 | [**Foundations: what HTTP is, and what it rides on**](01-foundations.md) | ⭐ Read a request and a response, say what a method's safety and idempotency promise, read status classes, explain "one meaning, three wire formats", count the round trips before a first byte, and read `curl -v` line by line |
+| 1 | [**Foundations: what HTTP is, and what it rides on**](01-foundations.md) | ⭐ Read a request and a response, say what a method's safety and idempotency promise, find out which methods survive the path to your server and what collapsing writes onto `POST` costs, build a URL whose query survives the trip, read status classes, explain "one meaning, three wire formats", count the round trips before a first byte, and read `curl -v` line by line |
 
 ### Part 2 — The protocol on the wire
 
@@ -116,6 +128,7 @@ The file numbers are the reading order.
 | 6 | [Origins, the same-origin policy and CORS](06-origins-and-cors.md) | Say what an origin is and how it differs from a site, explain why the same-origin policy blocks reading but not sending, defend against CSRF, and debug a CORS or preflight failure |
 | 7 | [Reaching localhost from a web page](07-loopback-and-local-network.md) | Explain why an HTTPS page may open `ws://127.0.0.1` with no certificate, tell a policy denial apart from a dead port, and say why a `Secure` cookie on `http://localhost` works in two browser engines and not the third |
 | 9 | [Keeping a browser signed in: cookies, tokens and where they live](09-keeping-a-browser-signed-in.md) | Say what an injected script can take from each place a browser keeps a credential, set a session cookie's attributes and say what each buys, say what signing out can and can't end, set timeouts that don't take a user's unsaved work with them, and choose between a cookie, tokens in memory and a server that holds the tokens |
+| 10 | [Authorisation: whose object is this?](10-authorisation-whose-object-is-this.md) | Tell a function-level check from an object-level one, take the tenant from the verified token and resolve it once, keep a tenant scope out of an `OR`, evaluate permission and entitlement in one function, build responses from an allowlist, and say what a client-side gate can and can't do |
 
 ### Part 4 — Caching
 
@@ -127,15 +140,17 @@ The file numbers are the reading order.
 
 | # | File | |
 |---|------|---|
-| 10 | [Exercises & answers](10-exercises.md) | Worked answers to every Check yourself, things to try, and questions for going deeper |
+| 11 | [Exercises & answers](11-exercises.md) | Worked answers to every Check yourself, things to try, and questions for going deeper |
 
 Read file 01 first. After it, Parts 2, 3 and 4 are independent of each other. Inside Part 2,
 read in order: file 04 assumes file 02's streams and file 03's ALPN. Inside
 Part 3, file 05 stands alone, and file 06 must come before file 07, which uses origins,
 CORS preflights and CSRF without explaining them. File 09 also comes after file 06,
 whose CSRF section it builds on. It sits in Part 3 although it was written after
-Part 4, which is why its number is out of step. File 05 also pairs naturally with
-file 03, which covers the handshake the certificate arrives in. File 08 needs only
+Part 4, which is why its number is out of step. File 10 follows file 09: file 09 gets a
+verified identity onto every request, and file 10 decides what that identity may touch. Its
+section on client-side gates uses file 09's single-page-app vocabulary. File 05 also pairs
+naturally with file 03, which covers the handshake the certificate arrives in. File 08 needs only
 file 01. Its incident turns on a `Content-Security-Policy` header, which file 07
 introduces, but it explains what it uses.
 
@@ -148,13 +163,17 @@ the one to read if you're building something other than HTTP on QUIC.
 Still missing: shared caches and CDNs in depth (`s-maxage`, `stale-while-revalidate`,
 purging), stream prioritisation (HTTP/2's deprecated scheme and what replaced it), QUIC's
 operational cost, and what network operators can still see. The questions at the end of
-file 10 are the honest list.
+file 11 are the honest list.
 
 ## If you're short on time
 
 - **New to HTTP, or lost in file 02:** file 01, all of it. It's the missing first
   chapter.
 - **10 minutes:** file 02, the section "Two ways a stream ends".
+- **`PUT`, `PATCH` or `DELETE` works locally and fails in production:** file 01, "Not
+  every method gets through".
+- **A query parameter arrives with a space where a `+` was, or a filter silently doesn't
+  apply:** file 01, "URLs and query strings: build them, don't template them".
 - **Debugging a protocol error right now:** file 02's last two sections, then
   file 03's "Observing and controlling it".
 - **Choosing a version for a service:** file 03, the table at the end.
@@ -170,6 +189,9 @@ file 10 are the honest list.
   attacker gets from each place", then "How a session ends".
 - **Choosing session timeouts without losing users' work:** file 09, "How long, and what
   an idle timeout does to unsaved work".
+- **One tenant's user can see another tenant's records:** file 10, "Two questions, not
+  one", then "The tenant goes in an AND, at the top".
+- **A response leaks a field it shouldn't:** file 10, "What a response may contain".
 - **A TLS error you can't place:** file 05, the diagram in "The three questions,
   and the three errors" — it maps each error message to the check that produced it.
 - **"Unknown authority" from a container:** file 05, "The trap: an empty
@@ -244,7 +266,14 @@ the body. A 304 isn't only a yes, though: the cache copies the header fields it 
 over the stored ones. So a header the server computes per response, such as a
 Content-Security-Policy chosen by `Content-Type`, which a 304 doesn't carry, can rewrite
 the policy of a page the browser already holds. Send such a header the same on the 304,
-or leave it off.
+or leave it off. Finally, knowing who is asking isn't knowing what they may touch. A role check
+answers "may this kind of caller use this route?"; only a check that mentions the object
+answers "may they have *this* record?". In a multi-tenant service that means a tenant taken
+from the verified token, resolved once in middleware and ANDed at the top level of every
+query, never placed inside an `OR`. What a tenant has bought is checked alongside the role,
+in one function the gate and the permissions listing share. Responses are built from an
+allowlist of fields, not by deleting secrets from a record, and anything a browser hides is
+presentation: the server is the only place a decision is enforced.
 
 ## How to use me
 
@@ -270,3 +299,5 @@ Ask me things like:
   `isSecureContext` is true?"
 - "Where should our dashboard keep its sign-in, and what does our sign-out actually
   end?"
+- "Walk me through this handler: which of its lookups are scoped to the caller's tenant,
+  and where does that tenant come from?"

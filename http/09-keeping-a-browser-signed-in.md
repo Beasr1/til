@@ -274,4 +274,4 @@ tokens SHOULD NOT be passed in page URLs".
    clear", while RFC 10017 ranks a browser that holds only a cookie as the most secure pattern.
    Do they disagree? What is each rule protecting against?
 
-(Answers in [`10-exercises.md`](10-exercises.md).)
+(Answers in [`11-exercises.md`](11-exercises.md).)

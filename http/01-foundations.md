@@ -94,6 +94,51 @@ data (file 04).
 > assumed `GET` was safe — a link prefetcher, a crawler, a retrying proxy — will log your
 > users out.
 
+### Not every method gets through
+
+A design with `PUT /orders/42`, `PATCH /orders/42` and `DELETE /orders/42` can pass every
+test on a laptop and fail the day it reaches the environment it was built for. The method is
+part of the request every box on the path reads (see "Who else is on the path", below), and
+any of them can keep its own list of methods it lets through.
+
+| Layer | Why it might refuse `PUT`, `PATCH` or `DELETE` | Where to look |
+|---|---|---|
+| The browser | It doesn't refuse, but a cross-origin request with any method other than `GET`, `HEAD` or `POST` needs a CORS preflight first, and the server's answer has to list the method in `Access-Control-Allow-Methods` | [File 06](06-origins-and-cors.md), "Preflight: asking before sending" |
+| A web application firewall (WAF) | The OWASP Core Rule Set, a widely used WAF ruleset, allows `GET HEAD POST OPTIONS` by default and adds a note for API owners: "Example: for RESTful APIs, add the following methods: PUT PATCH DELETE" | [`crs-setup.conf.example`](https://github.com/coreruleset/coreruleset/blob/v4.30.0/crs-setup.conf.example) (v4.30.0), enforced by rule 911100, "Method is not allowed by policy", at the default paranoia level |
+| A reverse proxy | nginx's [`limit_except`](https://nginx.org/en/docs/http/ngx_http_core_module.html#limit_except) restricts the methods a location accepts; "Allowing the `GET` method makes the `HEAD` method also allowed" | The proxy's configuration, per location |
+| An API gateway | Routes are often declared per method, so a method nobody declared has no route | The gateway's route table |
+| Your framework's router | A route registered for `POST` only. RFC 9110 says a `405` from the origin server "MUST" carry an `Allow` header listing what the resource does support ([§15.5.6](https://www.rfc-editor.org/rfc/rfc9110.html#section-15.5.6)) | Your own code |
+
+The way to tell them apart is who answered. A refusal from your own server is in your
+access log, and a `405` comes with `Allow`. A refusal from a WAF or a proxy usually isn't in
+your logs at all, often arrives as an HTML page your application never produces, and can
+carry a status, such as `403`, that looks like your own authorisation failing.
+
+The usual way out is to collapse every write onto `POST`: `POST /orders/42/update`,
+`POST /orders/42/cancel`. It works, because `POST` gets through everything that lets a form
+through. But it throws away what the method promised. `PUT` and `DELETE` are idempotent,
+and RFC 9110 explains why that's distinguished: "the request can be repeated automatically
+if a communication failure occurs before the client is able to read the server's response."
+For anything else, "A client SHOULD NOT automatically retry a request with a non-idempotent
+method unless it has some means to know that the request semantics are actually idempotent",
+and "A proxy MUST NOT automatically retry non-idempotent requests"
+([§9.2.2](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2)). A delete moved to
+`POST` is still idempotent in what it does, but nothing on the path can know that any more.
+If clients need to retry it, give it an idempotency key the server deduplicates on
+([system-design file 09 §9.4](../interview/system-design/09-api-design.md#94-idempotency-and-idempotency-keys)).
+
+Tunnelling the real method in a header, `X-HTTP-Method-Override: DELETE` on a `POST`,
+tends to fail at the same WAF. The Core Rule Set's default list of restricted request headers
+includes `x-http-method-override`, and it blocks the `_method` form parameter that some
+frameworks use for the same trick at its stricter paranoia levels.
+
+> ⚠️ Find out which methods survive the real path before you design the routes, not after.
+> One request through the deployed stack answers it:
+> `curl -i -X PATCH https://api.example.com/orders/42`. A `405` with an `Allow` header means
+> it reached your server; an HTML error page means something in front of it refused. If only
+> `GET` and `POST` survive, design action-style `POST` routes up front. Retrofitting them later
+> means changing every client call site, and the one that gets missed fails only at runtime.
+
 ## Status codes: what happened
 
 The first digit carries most of the meaning. RFC 9110 §15 defines the five classes:
@@ -135,7 +180,166 @@ handful do most of the work:
 HTTP/2 and HTTP/3 move the request line into special **pseudo-header** fields that start with
 a colon — `:method`, `:path`, `:scheme`, `:authority` — and `:authority` takes over from
 `Host` ([RFC 9113 §8.3.1](https://www.rfc-editor.org/rfc/rfc9113.html#section-8.3.1)). Same
-information, different packaging. That's the theme of the section after next.
+information, different packaging. That's the theme of "One meaning, three wire formats",
+below.
+
+## URLs and query strings: build them, don't template them
+
+A service sends `since=2026-11-19T09:00:00+04:00` to another service in a query string, and
+the other side reads `2026-11-19T09:00:00 04:00`, which Go's `time.RFC3339` layout and
+JavaScript's `Date` both reject. The request fails on the receiving side, for a reason
+nothing in the sender's logs shows. Nothing
+was lost on the network. The `+` meant one thing to the code that wrote the URL and another
+to the code that read it.
+
+A URL has parts, and each part has its own set of characters that mean something
+([RFC 3986](https://www.rfc-editor.org/rfc/rfc3986.html) §3):
+
+```
+  https://deploy:s3cret@api.example.com:8443/orders/42?status=open&q=fish#top
+  └─┬─┘   └────┬─────┘ └──────┬──────┘ └┬─┘└────┬────┘ └───────┬───────┘ └┬┘
+  scheme    userinfo        host      port    path           query      fragment
+            (before @)                                (after ?, before #)
+```
+
+When a value contains a character that's a delimiter in its part, such as `&` or `=` in a
+query value, `/` in a path segment, or `@` in a password, it has to be **percent-encoded**:
+"A percent-encoded octet is encoded as a character triplet, consisting of the percent
+character "%" followed by the two hexadecimal digits representing that octet's numeric
+value" (RFC 3986 §2.1). A space is `%20`, `&` is `%26`, `+` is `%2B`.
+
+### Two encodings that disagree about `+`
+
+The trouble is that query strings have two rulebooks.
+
+| | RFC 3986, generic URI syntax | `application/x-www-form-urlencoded`, HTML forms |
+|---|---|---|
+| Defined in | [RFC 3986](https://www.rfc-editor.org/rfc/rfc3986.html) | [WHATWG URL Standard](https://url.spec.whatwg.org/#application/x-www-form-urlencoded) §5 |
+| A space is written | `%20` | `+` |
+| A literal `+` means | `+`: it's one of the "sub-delims", allowed as is | a space: the parser says "Replace any 0x2B (+) in name and value with 0x20 (SP)" |
+| Used by | Generic URL handling, path segments | Almost every query-string parser on servers, and `URLSearchParams` in browsers |
+
+So a `+` written into a query by hand, which RFC 3986 considers perfectly legal, is read as a
+space by a form decoder at the other end. The WHATWG standard doesn't defend the form format:
+it calls it "in many ways an aberrant monstrosity", in use "due to the prevalence of HTML
+forms". Its own `URLSearchParams` "will encode U+0020 SPACE as U+002B (+)", and so does Go's
+`url.Values.Encode`. Both also encode a literal `+` as `%2B`, which is what makes the round
+trip safe.
+
+The rule that avoids all of it: never build a URL with string formatting. Hand the values to
+an encoding API, and let it encode each one for the part it goes into.
+
+```go
+// Wrong: the + becomes a space, and the & splits q in two.
+bad := fmt.Sprintf("https://api.example.com/orders?since=%s&q=%s",
+    "2026-11-19T09:00:00+04:00", "fish & chips")
+// Parsed by the receiver: since="2026-11-19T09:00:00 04:00", q="fish ", and a key " chips".
+
+// Right: url.Values encodes each value for a query.
+v := url.Values{}
+v.Set("since", "2026-11-19T09:00:00+04:00")
+v.Set("q", "fish & chips")
+v.Add("status", "open") // Add, not Set, for a repeated key
+v.Add("status", "held")
+u := url.URL{Scheme: "https", Host: "api.example.com",
+    Path: "/orders/" + url.PathEscape(orderRef), RawQuery: v.Encode()}
+// RawQuery: q=fish+%26+chips&since=2026-11-19T09%3A00%3A00%2B04%3A00&status=open&status=held
+```
+
+<details><summary>Rust</summary>
+
+```rust
+use url::Url;
+
+// The url crate encodes query pairs as application/x-www-form-urlencoded.
+let u = Url::parse_with_params(
+    "https://api.example.com/orders",
+    &[
+        ("since", "2026-11-19T09:00:00+04:00"),
+        ("q", "fish & chips"),
+        ("status", "open"),
+        ("status", "held"), // a repeated key is just another pair
+    ],
+)?;
+```
+
+</details>
+
+<details><summary>C++</summary>
+
+```cpp
+#include <curl/curl.h>
+
+// The standard library has no URL builder. libcurl's curl_easy_escape percent-encodes
+// everything except a-z, A-Z, 0-9, '-', '.', '_' and '~', so a space becomes %20 and
+// + becomes %2B, which either rulebook decodes correctly.
+std::string escape(CURL* curl, const std::string& s) {
+    char* out = curl_easy_escape(curl, s.c_str(), static_cast<int>(s.size()));
+    std::string r(out);
+    curl_free(out);
+    return r;
+}
+
+std::string url = "https://api.example.com/orders?since=" +
+                  escape(curl, "2026-11-19T09:00:00+04:00") +
+                  "&q=" + escape(curl, "fish & chips");
+```
+
+</details>
+
+<details><summary>JavaScript</summary>
+
+```js
+const u = new URL('https://api.example.com/orders');
+u.searchParams.set('since', '2026-11-19T09:00:00+04:00');
+u.searchParams.set('q', 'fish & chips');
+for (const s of ['open', 'held']) u.searchParams.append('status', s);
+// u.search: ?since=2026-11-19T09%3A00%3A00%2B04%3A00&q=fish+%26+chips&status=open&status=held
+```
+
+</details>
+
+Paths follow RFC 3986, not the form rules, which is why Go has two functions.
+`url.PathEscape("a b+c/d")` gives `a%20b+c%2Fd`, and `url.QueryEscape` of the same string gives
+`a+b%2Bc%2Fd`. Use the one for the part you're writing into.
+
+### Arrays and "no filter" have no standard
+
+Neither rulebook says how to send a list. Three common clients send the same list three
+ways, all checked by running them:
+
+| Client | Code | What goes on the wire |
+|---|---|---|
+| Go | `v.Add("status", "open"); v.Add("status", "held")` | `status=open&status=held` |
+| axios, default | `params: { status: ['open', 'held'] }` | `status[]=open&status[]=held` ([`indexes: false` is the default](https://github.com/axios/axios/blob/v1.x/README.md), "leads to empty brackets") |
+| Browser | `new URLSearchParams({ status: ['open', 'held'] })` | `status=open%2Cheld`: the array was turned into the string `"open,held"` |
+
+A Go server reading `r.URL.Query()["status"]` finds the first form, finds nothing under
+`status` in the second (the key is `status[]`), and finds one value, `open,held`, in the
+third. In none of these cases does anything report an error; the filter just doesn't apply.
+Agree one form with the server, and check the URL the client actually sent, in the Network
+tab or a proxy log, rather than trusting what the client library's documentation implies.
+
+The same goes for `false` and empty values. A checkbox left unticked can mean "only items
+where this is false" or "don't filter on this". JavaScript's `??` keeps `false`, `0` and `""`
+and only replaces `null` and `undefined`, so `stale ?? null` sends `stale=false` and filters.
+Decide which one you mean, and when it's "no filter", leave the key out of the URL entirely.
+
+### Credentials in the userinfo
+
+Some tools still take credentials in the URL itself, as `https://user:password@host/`. The
+userinfo grammar allows only unreserved characters, percent-encoded octets, the sub-delims and
+`:` (RFC 3986 §3.2.1), so a password containing `@`, `/`, `#` or `:` breaks the parse. Go
+refuses `https://deploy:p@ss:w/rd#1@repo.example.com/` with `invalid port ":w" after host`,
+having taken everything up to the first `@` as the userinfo. Encoded with
+`url.UserPassword`, the same password becomes `p%40ss%3Aw%2Frd%231` and parses.
+
+RFC 3986 also says "Use of the format "user:password" in the userinfo field is deprecated",
+because "The passing of authentication information in clear text has proven to be a security
+risk in almost every case where it has been used." A URL ends up in logs, shell history,
+process lists and error messages. Prefer an `Authorization` header. When a tool insists on a
+URL, percent-encode the password and keep the file it lives in readable only by the account
+that needs it.
 
 ## Stateless, and how state comes back anyway
 
@@ -381,5 +585,15 @@ which is why the three versions now share one definition of what a `GET` or a `4
 6. A colleague says "we're behind a CDN, so our origin is the CDN". Explain the two meanings
    of "origin" and which one they've mixed up. Then explain why a browser's security checks
    (file 06) never see your origin server's address at all.
+7. Your API's `PATCH /orders/42` and `DELETE /orders/42` work locally. In the customer's
+   environment both return a `403` with an HTML page your application never produces, and
+   your access log has no record of them. Which layer most likely answered, and how do you
+   confirm it? If you work round it with `POST /orders/42/delete`, what has a client lost
+   when that request times out, and what do you add to get it back?
+8. A client builds `"/events?from=" + from + "&tags=" + tags.join(",")`, with `from` set to
+   `2026-03-01T00:00:00+05:30` and `tags` to `["a&b", "c"]`. Write down what a Go server
+   reading `r.URL.Query()` gets for each key. Then rewrite the client with `URLSearchParams`
+   and say what the server gets for `tags` if you pass the array straight in, and if you
+   `append` each tag.
 
-(Answers in [`10-exercises.md`](10-exercises.md).)
+(Answers in [`11-exercises.md`](11-exercises.md).)

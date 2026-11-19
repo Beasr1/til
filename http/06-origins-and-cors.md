@@ -276,4 +276,4 @@ assuming no website could reach them.
    intermittently get CORS errors. A CDN sits in front of the API. What's missing, and what's
    the CDN doing?
 
-(Answers in [`10-exercises.md`](10-exercises.md).)
+(Answers in [`11-exercises.md`](11-exercises.md).)
