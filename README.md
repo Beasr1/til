@@ -28,15 +28,16 @@ Stage 1 · CS foundations ... interview/01 ──► cs-fundamentals
   │
   ▼
 Stage 2 · backend .......... http ──► go-services ──► api-orchestration
+                                          └──► observability
                              postgres ──┬──► clickhouse
                              kafka ─────┘
-                             vector-search, schema-evolution   (any time)
+                             mongodb, vector-search, schema-evolution   (any time)
   │
   ▼
 Stage 3 · design ........... interview/system-design
 
 Side tracks — independent, start any time
-  web ................ css, static-sites   (http/01 and 05 help)
+  web ................ css, static-sites, frontend   (http/01 and 05 help)
   trust & hardware ... signatures ──► pki ──► android;  smartcards, firmware-update
   biometrics ......... fingerprint;  face ──► face/spoof
 
@@ -74,6 +75,8 @@ flowchart LR
         kafka[kafka] --> ch
         vs[vector-search]
         se[schema-evolution]
+        mdb[mongodb]
+        go -.-> obs[observability]
     end
 
     subgraph S3["Stage 3 · design"]
@@ -95,6 +98,7 @@ flowchart LR
     subgraph W["Web"]
         css[css]
         ss[static-sites]
+        fe[frontend]
     end
 
     subgraph T["Trust and hardware"]
@@ -143,9 +147,9 @@ flowchart LR
 |---|---|---|---|
 | **0 — Tools** | [git](git/README.md), [docker](docker/README.md) | The two tools under all other work. Rewriting history safely; the build cache | Any order. Read early; both are short |
 | **1 — CS foundations** | [interview/01](interview/01-how-the-loop-works.md), [cs-fundamentals](interview/cs-fundamentals/README.md), [dsa](interview/dsa/README.md) | What happens under your code (process, memory, transactions, TCP), and algorithms by pattern | `interview/01` first. Then cs-fundamentals and dsa in either order, or together |
-| **2 — Backend in production** | [http](http/README.md), [go-services](go-services/README.md), [api-orchestration](api-orchestration/README.md), [postgres](postgres/README.md), [kafka](kafka/README.md), [clickhouse](clickhouse/README.md), [vector-search](vector-search/README.md), [schema-evolution](schema-evolution/README.md) | How the pieces of a real service fail, one at a time | http → go-services → postgres → kafka → clickhouse (needs postgres/10 and kafka/03). api-orchestration after go-services (needs its files 01, 02, 04 and 05). vector-search and schema-evolution any time |
+| **2 — Backend in production** | [http](http/README.md), [go-services](go-services/README.md), [api-orchestration](api-orchestration/README.md), [postgres](postgres/README.md), [kafka](kafka/README.md), [clickhouse](clickhouse/README.md), [vector-search](vector-search/README.md), [schema-evolution](schema-evolution/README.md), [mongodb](mongodb/README.md), [observability](observability/README.md) | How the pieces of a real service fail, one at a time | http → go-services → postgres → kafka → clickhouse (needs postgres/10 and kafka/03). api-orchestration after go-services (needs its files 01, 02, 04 and 05). vector-search, schema-evolution and mongodb any time. observability reads best after go-services (and kafka/01 for its queue chapter) but needs neither |
 | **3 — Putting it together** | [system-design](interview/system-design/README.md) | Designing a whole system and defending it. Links back into stage 2 for depth | After stage 1. Stage 2 makes it far richer but isn't required |
-| **Web** | [css](css/README.md), [static-sites](static-sites/README.md) | Building and shipping front ends | Independent of each other. static-sites assumes general HTTP/TLS; http/01 and 05 cover it |
+| **Web** | [css](css/README.md), [static-sites](static-sites/README.md), [frontend](frontend/README.md) | Building and shipping front ends, and the data they handle | Independent of each other. frontend assumes a little React and TypeScript; http/08 and postgres/05 are optional companions. static-sites assumes general HTTP/TLS; http/01 and 05 cover it |
 | **Trust and hardware** | [signatures](signatures/README.md), [pki](pki/README.md), [smartcards](smartcards/README.md), [firmware-update](firmware-update/README.md), [android](android/README.md) | What "signed" and "verified" actually prove, and how devices take, run and attest code | signatures first gives the vocabulary (integrity vs authenticity) the others lean on. Then pki, which `android/11` states as a prerequisite and which `smartcards/07` reads better after. firmware-update stands alone |
 | **Real-time networking** | [rust](rust/README.md), [peer-to-peer](peer-to-peer/README.md), [realtime-audio](realtime-audio/README.md) | Building networked, live systems: Rust for a Go programmer, direct connections through NATs, and voice end to end | peer-to-peer needs http/04 (QUIC) and cs-fundamentals file 09 (stated). realtime-audio builds on cs-fundamentals files 02 and 04; its examples use Rust crates, so rust first helps. rust assumes you already write Go |
 | **Biometrics** | [fingerprint](fingerprint/README.md), [face](face/README.md) → [face/spoof](face/spoof/README.md) | Recognition, its metrics, and attacks on it | `face/01` before `face/spoof` (stated). fingerprint is independent; its metrics chapter complements `face/01` |
@@ -182,18 +186,21 @@ flowchart LR
 | [face](face/README.md) | Face biometrics: shared statistics, then areas (`spoof/`) | `01-estimating-error-rates` |
 | [fingerprint](fingerprint/README.md) | Fingerprint matching and templates, from scratch | `01-what-is-a-fingerprint` |
 | [firmware-update](firmware-update/README.md) | Replacing the code inside a USB device, and proving it worked | `01-why-firmware-updates-are-hard` |
-| [git](git/README.md) | Rebasing, force-pushing and commit identity without losing work | `01-what-a-commit-is` |
+| [frontend](frontend/README.md) | The bugs a React front end gets from the data it handles: cached server state, paginated tables, dates vs days, forms and 'no value', rendering and language traps | `01-foundations` |
+| [git](git/README.md) | Rebasing, force-pushing, reverting merges, line endings and commit identity without losing work | `01-what-a-commit-is` |
 | [go-services](go-services/README.md) | The parts of a Go service that fail slowly in production | `01-how-a-go-service-runs` |
-| [http](http/README.md) | What HTTP is and rides on, framing, version negotiation, QUIC, TLS trust, origins and CORS, browser sessions, and caching and revalidation | `01-foundations` |
+| [http](http/README.md) | What HTTP is and rides on, framing, version negotiation, QUIC, TLS trust, origins and CORS, browser sessions, caching and revalidation, and object-level authorisation | `01-foundations` |
 | [interview](interview/README.md) | Interview preparation as learning: dsa, cs-fundamentals, system-design | `01-how-the-loop-works` |
 | [kafka](kafka/README.md) | What Kafka actually promises an application | `01-what-kafka-is` |
+| [mongodb](mongodb/README.md) | Unique, partial and multikey indexes, live index changes, tenant-safe queries, paging and joins on MongoDB | `01-what-mongodb-does-with-a-query` |
+| [observability](observability/README.md) | Making a distributed system explain itself with OpenTelemetry: traces across services and queues, logs that know their trace, what not to record, and audit trails | `01-what-observability-is` |
 | [peer-to-peer](peer-to-peer/README.md) | Connecting two machines directly when both sit behind NATs and firewalls | `01-foundations` |
 | [pki](pki/README.md) | Certificate chains: what an issuer CA is, building vs validating a path, and the trust store you have to operate | `01-what-a-certificate-is` |
-| [postgres](postgres/README.md) | Indexes, live schema changes and migrations on a busy database | `01-what-postgres-does-with-a-query` |
+| [postgres](postgres/README.md) | Indexes, live schema changes, migrations, invariants a constraint can't hold, and transactions through a pool on a busy database | `01-what-postgres-does-with-a-query` |
 | [realtime-audio](realtime-audio/README.md) | Capturing, sending and playing voice live, and where the milliseconds go | `01-foundations` |
-| [rust](rust/README.md) | Rust taught by contrast with Go: ownership, errors, traits, async and tokio | `01-foundations` |
-| [schema-evolution](schema-evolution/README.md) | Changing a data format when you don't control the reader | `01-the-installed-client-problem` |
-| [signatures](signatures/README.md) | Hashes, MACs and signatures: what each proves, and SSH signing | `01-foundations` |
+| [rust](rust/README.md) | Rust taught by contrast with Go: ownership, errors, traits, async and tokio, concurrency patterns, Cargo hygiene, and calling C | `01-foundations` |
+| [schema-evolution](schema-evolution/README.md) | Changing a data format when you don't control the reader, and reading one when you don't control the writer | `01-the-installed-client-problem` |
+| [signatures](signatures/README.md) | Hashes, MACs and signatures: what each proves, SSH signing, MAC-signed tokens between services, and signing JSON across languages | `01-foundations` |
 | [smartcards](smartcards/README.md) | Contact smart cards, from power-up to proving genuineness | `01-what-a-smart-card-is` |
 | [static-sites](static-sites/README.md) | Static sites from build to your own domain | `01-foundations` |
 | [vector-search](vector-search/README.md) | What a vector database does with embeddings, and the settings that change answers | `01-what-vector-search-is` |
