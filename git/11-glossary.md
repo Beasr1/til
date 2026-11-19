@@ -1,4 +1,4 @@
-# 9. Glossary
+# 11. Glossary
 
 Terms in the order you meet them, not alphabetically — look things up with your editor's
 search.
@@ -46,6 +46,83 @@ master" by SHA says no even when the change is there.
 
 **Revert** — a *new* commit that undoes an old one. The safe way to withdraw something
 already published, because it adds history instead of rewriting it.
+
+## Reverts and branches
+
+**Merge base** — the most recent commit both sides of a merge have in their history. A merge
+combines what each side changed *since* it; anything at or before it counts as done.
+
+**Mainline (`git revert -m <n>`)** — which parent of a merge to keep when reverting it.
+`-m 1` keeps the branch that was merged into and drops what the merge brought in.
+
+**Sticky revert** — not git's term, but the behaviour: reverting a merge undoes its content
+and leaves its ancestry, so later merges of the same branch bring only commits made after
+it. Fixed by reverting the revert *before* re-merging, or by re-landing the work as fresh
+commits (`git rebase --no-ff`).
+
+**Revert the revert** — `git revert <the revert>`: re-applies exactly what the revert
+removed. Recent git titles it `Reapply "…"`.
+
+**Environment branch** — a long-lived branch per deployment environment (dev, staging,
+production). Diverges as soon as changes are merged into each separately.
+
+**Trunk** — the single shared branch everyone integrates into, in trunk-based development.
+Release branches are cut from it and never merged back.
+
+**Feature flag (toggle)** — a runtime switch that turns code paths on or off by
+configuration, so every environment can run the same commit.
+
+## Attributes and line endings
+
+**LF / CRLF** — line endings: `\n` (one byte) or `\r\n` (two). Git compares bytes, so
+changing endings changes every line.
+
+**`.gitattributes`** — a committed file assigning attributes to paths by pattern. When
+several patterns match, the later line wins, per attribute.
+
+**`text` / `text=auto`** — marks paths as text, so their endings are normalised to LF in the
+index. `auto` lets git decide per file, and leaves files already committed with CRLF alone.
+
+**`eol=lf` / `eol=crlf`** — the line ending a path gets in the working tree on checkout, on
+every machine. Implies `text` if `text` is unset.
+
+**`binary`** — built-in macro for `-diff -merge -text`.
+
+**`core.autocrlf`** — a per-clone setting. `true` acts like `text=auto` everywhere plus CRLF
+on checkout; `input` normalises on the way in only. Consulted only for paths with no `text`
+attribute.
+
+**Renormalise** — `git add --renormalize .` re-applies the attributes to files already
+committed. `git merge -X renormalize` does the same for the three sides of a merge.
+
+**`--ignore-cr-at-eol` / `-w`** — diff options that hide carriage-return-only, or all
+whitespace, differences.
+
+**`.git-blame-ignore-revs`** — a file of full SHAs that blame skips
+(`blame.ignoreRevsFile`, or `--ignore-revs-file`). GitHub reads it from the repository root.
+
+**Similarity index** — how much of a file survived between a deleted and an added path. At
+50% or more (the default threshold, `-M`/`find-renames`) git calls the pair a rename;
+`--name-status` shows it as `R` plus the score.
+
+## Merge results
+
+**Semantic conflict** — a merge that's textually clean and wrong: a duplicate declaration,
+both sides of a conflict kept, a call to a signature that changed.
+
+**Merged results pipeline** — CI that tests the temporary merge of a branch into its target
+rather than the branch alone (GitLab's term; GitHub's `pull_request` workflows run on the
+`refs/pull/<n>/merge` commit).
+
+**Link-time error (ES modules)** — importing a name the target module doesn't export throws
+a `SyntaxError` while the module graph is linked, before any module code runs.
+
+## Secrets
+
+**Rotation** — replacing a credential and revoking the old one. The first response to a
+committed secret; deleting the file doesn't un-leak it.
+
+**`git rm --cached`** — stop tracking a file from the next commit on. Earlier commits keep it.
 
 ## Rebase mechanics
 
@@ -133,7 +210,8 @@ configured, commits fail instead of going out with a guess.
 
 **`git filter-repo`** — separate tool, recommended by git's own manual over
 `filter-branch`, for rewriting history wholesale (e.g. replacing an email in every commit).
-New SHAs throughout; force-push everything.
+New SHAs throughout; force-push everything. Its `--sensitive-data-removal` flag (version
+2.47 or later) is what GitHub's guide uses to scrub a leaked file or string.
 
 **`noreply` address** — GitHub's `ID+USERNAME@users.noreply.github.com`, which attributes
 commits to your account without publishing a real address.

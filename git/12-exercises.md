@@ -1,4 +1,4 @@
-# 10. Exercises & answers
+# 12. Exercises & answers
 
 Every "Check yourself" question, with worked answers. Read the answer only after you have
 committed to one — the wrong answers here are the ones that cost afternoons.
@@ -116,6 +116,25 @@ discriminants, protobuf/capnp field numbers, feature flags, fixture ids.
 **6. What does a rebase guarantee, in one sentence?**
 That your text survives — nothing about the assumptions that text encoded.
 
+**7. Cherry-picked and rebased copies merge clean, then fail with a redeclaration.**
+Git only compares overlapping regions. Each copy added the constant at a different place in
+the file, and relative to the merge base each addition sat in an area the other side hadn't
+touched, so both were "incorporated in the final result verbatim". Git has no idea the two
+copies are the same change: a cherry-pick is a new commit with a new SHA, linked to the
+original by nothing. What would have caught it is a pipeline that builds the *merge result*
+rather than the branch: GitLab's merged results pipelines, or a GitHub Actions
+`pull_request` workflow, which runs on the `refs/pull/<n>/merge` commit. Each branch was
+green on its own.
+
+**8. `node --check` and a container build pass; a merge dropped a named export.**
+The service fails to start at all. With native ES modules, an import of a name the target
+module doesn't export is a `SyntaxError` thrown while the module graph is *linked*, which
+happens before any module's code runs, so it's the whole process rather than the one route
+that uses the name. `node --check` only parses, so it passes, and a container build only
+copies files. The cheapest catch is one CI step that loads the program:
+`node --input-type=module -e "await import('./server.js')"` (or the module that builds the
+app, if importing the entry point starts listening). It exits non-zero on the bad import.
+
 ---
 
 ## File 5 — Force-with-lease
@@ -182,6 +201,23 @@ that entry. It is exactly the class of silent change file 4 is about.
 **7. Risk of `rerere`?**
 It faithfully replays a resolution you got *wrong* the first time, without asking. If a
 rebase resolves suspiciously easily, verify rather than trusting it.
+
+**8. `.env` committed six months ago, then `git rm --cached` and `.gitignore`.**
+The password is in every commit from the one that added `.env` up to the one that untracked
+it. Anyone who has cloned or fetched since then has it: teammates, CI runners, any fork, any
+backup. `.gitignore` never affected it ("Files already tracked by Git are not affected"),
+and `rm --cached` only stopped later commits from carrying it. So the first thing is to
+rotate the password: issue a new one, deploy it, and revoke the old one. After that the copy
+in history is a dead string. Then decide separately whether the history needs scrubbing.
+
+**9. When is a rewrite worth it, and what doesn't it fix?**
+When the repository itself must not contain the data. Personal data is the obvious case, or
+a private repository that's about to go public. For an ordinary credential that's been
+rotated, GitHub's own guide says the rewrite "may not be warranted". It doesn't fix: clones
+and forks that already have the commits; any copy cached by the host until support removes
+it; the secret being valid, which only rotation fixes; and the risk of one push from an old
+clone putting it all back. It also changes every SHA from the first affected commit, which
+breaks signatures and costs everyone a reset or a reclone.
 
 ---
 
@@ -262,6 +298,100 @@ address), and it identifies the key, not the person at the keyboard.
 
 ---
 
+## File 9 — Reverting a merge
+
+**1. `git revert -m 1 M`, then `git merge topic` with no new commits.**
+Nothing happens: "Already up-to-date." Topic's tip `B` is already in main's history (it's
+`M`'s second parent), so the merge base is `B` itself and topic has nothing main doesn't
+already reach. Git never looks at content to decide this. `W` took the content out, but
+the ancestry still says it was merged.
+
+**2. A fix `C` is added to topic and merged.**
+Only `C`'s change arrives. The three snapshots are the base (`B`), main's tip, and topic's
+tip (`C`). Topic's side since `B` is just `C`. Main's side since `B` includes `W`, which
+deleted `A`'s and `B`'s work, and git keeps both sides' changes. So main ends up with a fix
+for a feature it doesn't have. The fix is to revert `W` *first*, then merge.
+
+**3. `branch --merged` lists topic, but the feature isn't on main.**
+`--merged` asks whether topic's tip is reachable from main, which is about ancestry, and it
+is, through `M`. Whether the content is there is a different question, and `W` changed the
+answer. `git diff main topic` (or `--stat`) compares content tip to tip and shows the
+feature missing. Ancestry answers "was it merged?" Only a diff answers "is it here?"
+
+**4. Why `-m` for a merge but not for an ordinary commit?**
+Reverting means applying the inverse of a commit's change, and a change is always relative
+to a parent. An ordinary commit has one parent, so there's one answer. A merge has two, and
+its change relative to each is different: relative to parent 1 it's "everything topic
+brought in"; relative to parent 2 it's "everything main did meanwhile". `-m 1` picks the
+first, which is almost always what you mean.
+
+**5. Wrong-direction merge into a release branch, reverted. Why not revert the revert?**
+Because `W` removed exactly the thing you must not ship: every unreleased change on the
+integration branch. Reverting `W` puts all of it back on the release branch. And the
+release branch's history still claims all those commits as merged, so when they're
+promoted properly later they won't arrive. The branch itself is polluted. Recreate it from
+the right base (`git switch -c feature-v2 origin/release`), cherry-pick only the feature's
+own commits, open a new merge request, and close the old one with a note.
+
+**6. Dev, staging and production branches, every feature merged into each.**
+Any two of these. A conflict resolved by hand on one branch picks the stale side and
+silently undoes an earlier fix, and with three or four branches the same conflict gets
+resolved three or four times by different people. A revert on one branch travels into
+another the next time those branches are merged, and then later merges of the original work
+bring nothing (§9.3). A per-branch edit, like a route commented out on staging only, gets
+"resolved" away by a merge in either direction. Replace it with one trunk: environments
+differ by configuration (per-environment inventories or variable files on the same branch),
+unfinished features hide behind runtime flags, and a release is a tagged commit deployed to
+staging and then the same tag to production. Release fixes go to trunk first and are
+cherry-picked to the release branch.
+
+---
+
+## File 10 — Attributes, line endings and blame
+
+**1. 1,350 changed lines, 45 without carriage returns.**
+The branch rewrote those files' line endings from LF to CRLF, so every line differs by one
+byte, and 45 lines changed for real. Beyond review, the commit really does change every
+line. Any other branch that edits those files now overlaps it everywhere and conflicts,
+and `git blame` attributes 1,300 lines to a commit that didn't touch their meaning. Send it
+back and have the endings restored, rather than merging and fixing later.
+
+**2. No `.gitattributes`; Windows colleague with `core.autocrlf=true`; you with nothing set
+and a CRLF editor.**
+Your colleague's commits contain LF: `autocrlf=true` acts like `text=auto` on every file, so
+text is normalised to LF when it's added, and converted to CRLF only in their working tree.
+Yours contain CRLF: with no `text` attribute and no `core.autocrlf`, nothing converts, so
+whatever your editor wrote goes in as-is. You're the one producing the whole-file rewrite,
+on the "safe" platform. A committed `* text=auto` (or `text=auto eol=lf`) would have
+normalised your commits regardless of your config.
+
+**3. `* text=auto eol=lf` committed, but old CRLF files stay CRLF.**
+`text=auto` deliberately leaves alone a file that's "already in Git with CRLF endings". The
+attributes protect new work only. To convert the existing files, from a clean tree:
+`git add --renormalize .`, check `git status`, and commit that on its own. Then list the
+commit in `.git-blame-ignore-revs`, and tell anyone with an older branch that
+`git merge -X renormalize` exists for exactly this.
+
+**4. Why add the SHA only after the formatting commit lands; what does squash-merge break?**
+The ignore file lists commit IDs, and a rebase or squash makes a new commit with a new ID,
+so a SHA written down before the merge may not exist on the main branch afterwards. If the
+host squash-merges a merge request that has the formatting commit and a feature commit in
+it, they become one commit. Ignoring that in blame would hide the feature too, and not
+ignoring it leaves every reformatted line blamed on the feature. Give the sweep its own
+merge request, and add its SHA in a follow-up once it's on the main branch.
+
+**5. Move plus heavy rewrite in one commit, teammate edits the old path.**
+Git doesn't record the move. It pairs your deleted and added paths only if they're at least
+50% similar (the default). If your rewrite keeps it above that, the merge follows the rename
+and applies your teammate's edits at the new path, conflicting wherever they overlap your
+rewrite, which is most places. Below it, git sees a deletion plus an unrelated new file, and
+your teammate's work becomes a `modify/delete` conflict with nowhere to go automatically.
+Split it into a pure move first (100% similar, `R100` in `--name-status`), landed quickly,
+then the edits. Now the merge follows the rename for certain, and any conflicts are
+ordinary edit-against-edit ones at the new path.
+
+---
+
 ## Things to try
 
 1. **Make a rebase conflict on purpose.** Two branches editing the same line, rebase one
@@ -281,3 +411,28 @@ address), and it identifies the key, not the person at the keyboard.
    `gitdir:` include for one folder. Confirm with `--show-origin` inside a repo there; then
    delete the trailing slash, then move the include above `[user]`, and watch the address
    flip back each time with no error.
+7. **Make a revert sticky.** In a scratch repo, merge a two-commit branch with `--no-ff`,
+   revert the merge with `-m 1`, then merge the branch again and read the output. Add one
+   commit to the branch and merge once more; check with `git diff` which of the three
+   changes made it. Then revert the revert and watch the original two come back.
+8. **Rebuild instead.** Repeat exercise 7 up to the revert, then `git rebase --no-ff` the
+   branch onto its own base and merge it. Compare the result with the revert-the-revert
+   version.
+9. **Make the CRLF diff.** Commit a file with LF, convert it to CRLF
+   (`perl -pi -e 's/\n/\r\n/' file` works on macOS and Linux alike), and compare
+   `git diff --stat` with `git diff --ignore-cr-at-eol`. Then commit `* text=auto eol=lf`
+   and `git add --renormalize .`, and see the change disappear.
+10. **Push a rename under the threshold.** Move a file and rewrite about two thirds of it in
+    one commit, while another branch edits the original. Merge and read the conflict. Then
+    redo it as a pure move plus a separate edit, and compare.
+
+---
+
+## Questions worth asking me
+
+- "Here's my branch graph after a revert. Which recovery from file 9 §9.5 fits?"
+- "We keep one branch per environment. What would moving to one trunk take, step by step?"
+- "Should this repository pin `eol=lf`, or just `text=auto`?"
+- "Which commits belong in our `.git-blame-ignore-revs`?"
+- "A secret went into our history. Walk me through what to rotate, and whether to rewrite."
+- "Why did this merge go wrong when git reported no conflict?"

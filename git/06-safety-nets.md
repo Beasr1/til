@@ -117,6 +117,91 @@ resolves suspiciously easily, check the result.
 5. Force-pushed over someone? → *their* reflog, or the server's (GitLab/GitHub keep
    unreachable objects for a while; ask an admin before you assume it is gone)
 
+## 6.8 The reverse problem: a secret you committed
+
+Everything above works because git keeps things. That same property is the problem when what
+you committed is a password, a private key or a token. Now you want something gone, and git's
+whole design is about not losing it.
+
+**Deleting it in a later commit doesn't remove it.** Commits are snapshots
+([file 1](01-what-a-commit-is.md) §1.1), so every commit made while the file was tracked still
+contains it, and every clone and fork has those commits. `.gitignore` doesn't help either:
+"Files already tracked by Git are not affected" ([gitignore](https://git-scm.com/docs/gitignore)).
+The documented fix, `git rm --cached` and then a `.gitignore` entry, is there "to stop the file
+from being reintroduced in later commits". Later ones only.
+
+```sh
+git rm --cached .env             # stop tracking it from the next commit on
+echo ".env" >> .gitignore        # and stop it coming back
+git log --all --oneline -- .env  # every commit that still holds a copy
+```
+
+That fixes the future. The past still holds the value.
+
+**So rotate first.** GitHub's guide to removing sensitive data starts there: "as a first step
+you need to revoke and/or rotate that secret", and once you have, "Going through the extra
+steps to rewrite the history and remove the secret may not be warranted"
+([GitHub Docs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)).
+OWASP agrees: "Keys that were exposed should undergo immediate revocation"
+([Secrets Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html)).
+A rotated secret in history is a dead string. An unrotated one is a live credential you've
+hidden from yourself and nobody else. That holds for a private repository too: everyone with
+read access, every CI runner and every laptop that ever cloned it has a copy, and you can't
+list them.
+
+**Rewrite history only when the repository itself must be scrubbed**, for example personal
+data that has to go, or a private repository about to be made public. The tool is
+`git filter-repo`, which "is now recommended by the git project" over `filter-branch`
+([git-filter-repo](https://github.com/newren/git-filter-repo)). GitHub's guide uses its
+`--sensitive-data-removal` flag, which needs filter-repo 2.47 or later:
+
+```sh
+git filter-repo --sensitive-data-removal --invert-paths --path config/.env   # drop a file from every commit
+git filter-repo --sensitive-data-removal --replace-text ../passwords.txt     # or replace strings everywhere
+```
+
+Know the bill before you start. From the same GitHub guide:
+
+| Cost | Why |
+|---|---|
+| Every SHA from the first affected commit on changes | It rebuilds history ([file 1](01-what-a-commit-is.md) §1.2), so you force-push every branch and tag ([file 5](05-force-with-lease.md)) and everyone resets or reclones |
+| Clones and forks keep the old commits | "You cannot remove sensitive data from other users' clones of your repository", and a fork that has the commit keeps it reachable |
+| Signatures stop verifying | "signatures would no longer be valid", because the signed commits are gone |
+| Open pull requests | GitHub recommends merging or closing them first |
+| The host's copies | GitHub Support has to remove cached views and dereference affected pull requests |
+| Recontamination | One push from an old clone brings it all back |
+
+It's the same bill as rewriting an email address ([file 8](08-commit-identity.md) §8.6), for
+the same reason.
+
+**Prevention is cheaper than either.**
+
+- Reference secrets from wherever they live (a vault, the CI system's secret variables, an
+  encrypted file) from the very first commit. "I'll move it to secrets later" is how a literal
+  key ends up in a tracked template.
+- Example config holds obvious placeholders and nothing else. A `.env.example` gets copied
+  everywhere, and a real-looking value in it ends up in production or in someone's fork:
+
+  ```sh
+  # .env.example: every value is fake, and looks fake
+  DATABASE_URL=postgres://app:CHANGE_ME@localhost:5432/orders
+  SIGNING_KEY=replace-with-a-key-from-the-secret-store
+  ```
+
+- Scan for secrets before the commit and again in CI. GitHub suggests "a well-known tool in a
+  pre-commit hook like git-secrets or gitleaks", and push protection, which blocks pushes
+  "which contain hardcoded secrets". A pre-commit hook lives in one clone and can be skipped,
+  so the CI scan is the one that counts.
+
+If the leaked secret was a signing key, rotation has an extra twist, because signatures it
+already made can't be dated: see the signatures course,
+[file 04 §4.6](../signatures/04-signing-in-automation.md).
+
+> **Teacher's aside.** "We removed it in a later commit" is a statement about the tip of one
+> branch. A leak is a statement about history, and history is the one thing this whole
+> chapter has been telling you git refuses to lose. The question after a leak is never "is
+> it still in the repo?" It's "has the credential stopped working?"
+
 ---
 
 ## Check yourself
@@ -130,3 +215,8 @@ resolves suspiciously easily, check the result.
 6. `range-diff` shows a `!` on a commit you never had a conflict in. What does that tell
    you, and what should you do?
 7. What is the risk of enabling `rerere`?
+8. Six months ago a teammate committed `.env` with a database password, then ran
+   `git rm --cached .env` and added it to `.gitignore`. What is still exposed, to whom, and
+   what do you do first?
+9. When is rewriting history worth it after a leak, and name two things the rewrite still
+   doesn't fix.
